@@ -2,3 +2,4 @@ python-telegram-bot==21.0.1
 pymongo==4.7.3
 requests
 fuzzywuzzy
+Flask

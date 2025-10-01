@@ -24,6 +24,9 @@ import io
 import requests
 import uuid
 import datetime
+from flask import Flask
+from threading import Thread
+import os
 
 # ========================
 # CONFIG
@@ -102,6 +105,14 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO, stream=log_stream
 )
 logger = logging.getLogger(__name__)
+
+# Flask web server for Render health checks
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    """A simple route to confirm the web server is running."""
+    return "Bot is alive and running!"
 
 
 # ========================
@@ -1860,10 +1871,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN
 # ========================
 
+def run_web_server():
+    """Runs the Flask web server to respond to Render's health checks."""
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
 def main():
     if not connect_to_mongo():
         logger.critical("Failed to connect to the initial MongoDB URI. Exiting.")
         return
+
+    # Start the Flask web server in a background thread
+    web_server_thread = Thread(target=run_web_server)
+    web_server_thread.daemon = True
+    web_server_thread.start()
+    logger.info("Web server started in a background thread.")
 
     # Create TTL index for pending verifications (48-hour expiry - 48*60*60 = 172800)
     for uri in VERIFICATION_DB_URIS:
