@@ -1,0 +1,5 @@
+python-telegram-bot==20.8
+pymongo==4.7.3
+rapidfuzz==3.13.0
+requests
+fuzzywuzzy
