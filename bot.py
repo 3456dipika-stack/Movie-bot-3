@@ -21,6 +21,7 @@ from fuzzywuzzy import fuzz
 import math
 import re
 import io
+import time
 import requests
 import uuid
 import datetime
@@ -1899,23 +1900,8 @@ def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-async def auto_restart():
-    """Waits for 8 hours and then restarts the bot to keep it fresh."""
-    # WARNING: This is a simple, forceful restart method. It's used here as a
-    # specific workaround for simple hosting environments. In a production
-    # setup, it is highly recommended to use a proper process manager like
-    # systemd or supervisord to handle restarts gracefully.
-    await asyncio.sleep(8 * 60 * 60)  # 8 hours = 28800 seconds
-    logger.info("--- Auto-restarting bot after 8 hours ---")
-    # Replace the current process with a new one
-    os.execv(sys.executable, ['python'] + sys.argv)
-
-async def post_initialization(application: Application):
-    """Schedules tasks to be run in the background after the application has started."""
-    application.create_task(auto_restart())
-    logger.info("Auto-restart task scheduled for 8 hours.")
-
-def main():
+async def main_async():
+    """The main asynchronous entry point for the bot."""
     if not connect_to_mongo():
         logger.critical("Failed to connect to the initial MongoDB URI. Exiting.")
         return
@@ -1926,8 +1912,8 @@ def main():
     web_server_thread.start()
     logger.info("Web server started in a background thread.")
 
-    # Create the application instance and set the post_init hook to schedule background tasks
-    app = Application.builder().token(BOT_TOKEN).post_init(post_initialization).build()
+    # Create the application instance
+    app = Application.builder().token(BOT_TOKEN).build()
 
     # Create TTL index for pending verifications (48-hour expiry - 48*60*60 = 172800)
     for uri in VERIFICATION_DB_URIS:
@@ -1993,10 +1979,34 @@ def main():
     # Group tracking handler
     app.add_handler(ChatMemberHandler(on_chat_member_update))
 
-    logger.info("Bot started...")
-    # Start the bot
-    app.run_polling(poll_interval=1, timeout=10, drop_pending_updates=True)
+    logger.info("Bot starting...")
 
+    # Initialize and start the application
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(poll_interval=1, timeout=10, drop_pending_updates=True)
+
+    # Wait for 8 hours
+    logger.info("Bot is running. Restart scheduled in 8 hours.")
+    await asyncio.sleep(8 * 60 * 60)
+
+    # Gracefully shut down the bot
+    logger.info("Shutting down bot for scheduled restart...")
+    await app.updater.stop()
+    await app.stop()
+    await app.shutdown()
+    logger.info("Bot has been shut down gracefully.")
 
 if __name__ == "__main__":
-    main()
+    while True:
+        try:
+            asyncio.run(main_async())
+            logger.info("--- Auto-restarting bot after 8 hours ---")
+            # A brief pause before restarting
+            time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("Bot shut down manually.")
+            break
+        except Exception as e:
+            logger.critical(f"Bot crashed with critical error: {e}. Restarting in 15 seconds...")
+            time.sleep(15)
