@@ -1910,6 +1910,11 @@ async def auto_restart():
     # Replace the current process with a new one
     os.execv(sys.executable, ['python'] + sys.argv)
 
+async def post_initialization(application: Application):
+    """Schedules tasks to be run in the background after the application has started."""
+    application.create_task(auto_restart())
+    logger.info("Auto-restart task scheduled for 8 hours.")
+
 def main():
     if not connect_to_mongo():
         logger.critical("Failed to connect to the initial MongoDB URI. Exiting.")
@@ -1921,12 +1926,8 @@ def main():
     web_server_thread.start()
     logger.info("Web server started in a background thread.")
 
-    # Create the application instance
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    # Schedule the auto-restart task within the application's event loop
-    app.create_task(auto_restart())
-    logger.info("Auto-restart task scheduled for 8 hours.")
+    # Create the application instance and set the post_init hook to schedule background tasks
+    app = Application.builder().token(BOT_TOKEN).post_init(post_initialization).build()
 
     # Create TTL index for pending verifications (48-hour expiry - 48*60*60 = 172800)
     for uri in VERIFICATION_DB_URIS:
