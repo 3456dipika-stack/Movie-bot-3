@@ -1542,7 +1542,7 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # In private chat, only admins can search for files.
     if update.effective_chat.type == "private" and update.effective_user.id not in ADMINS:
-        await send_and_delete_message(context, update.effective_chat.id, "❌ Sorry, only admins can use the search function in a private chat.")
+        await send_and_delete_message(context, update.effective_chat.id, "❌ Use this bot on any group. Sorry, (only admin)")
         return
 
     if await is_banned(update.effective_user.id):
