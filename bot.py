@@ -27,6 +27,7 @@ import datetime
 from flask import Flask
 from threading import Thread
 import os
+import sys
 
 # ========================
 # CONFIG
@@ -118,6 +119,27 @@ def home():
 # ========================
 # HELPERS
 # ========================
+
+async def get_random_file_from_db():
+    """Fetches a single random file document from any of the available databases."""
+    for uri in MONGO_URIS:
+        temp_client = None
+        try:
+            temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+            temp_db = temp_client["telegram_files"]
+            temp_files_col = temp_db["files"]
+            # Use $sample for efficient random document retrieval
+            pipeline = [{"$sample": {"size": 1}}]
+            result = list(temp_files_col.aggregate(pipeline))
+            if result:
+                return result[0]  # Return the first document found
+        except Exception as e:
+            logger.error(f"DB Error while fetching random file: {e}")
+            continue # Try the next URI
+        finally:
+            if temp_client:
+                temp_client.close()
+    return None # Return None if no file is found in any DB
 
 def escape_markdown(text: str) -> str:
     """Helper function to escape special characters in Markdown V2."""
@@ -459,100 +481,65 @@ async def save_user_info(user: Update.effective_user):
 # TASK FUNCTIONS (FOR BACKGROUND EXECUTION)
 # ========================
 
-async def send_file_task(query, context, file_data):
+async def send_file_task(user_id: int, source_chat_id: int, context: ContextTypes.DEFAULT_TYPE, file_data: dict):
     """Background task to send a single file to the user's private chat and auto-delete it."""
-    user_id = query.from_user.id
     try:
         sent_message = await context.bot.copy_message(
-            chat_id=user_id, # Ensure it's sent to the user's private chat
+            chat_id=user_id,
             from_chat_id=file_data["channel_id"],
             message_id=file_data["file_id"],
         )
 
-        # If the message was sent successfully
         if sent_message:
-            # Send the custom combined promotional message to the private chat (now simplified)
-            await send_and_delete_message(
-                context,
-                user_id,
-                CUSTOM_PROMO_MESSAGE
-            )
+            await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
+            await send_and_delete_message(context, source_chat_id, "✅ I have sent the file to you in a private message. The file will be deleted automatically in 5 minutes.")
 
-            # Notify the user in the original chat (can be group/private)
-            await send_and_delete_message(context, query.message.chat.id, "✅ I have sent the file to you in a private message. The file will be deleted automatically in 5 minutes.")
-
-            # Wait for 5 minutes
             await asyncio.sleep(5 * 60)
-
-            # Delete the message
-            await context.bot.delete_message(
-                chat_id=user_id,
-                message_id=sent_message.message_id
-            )
+            await context.bot.delete_message(chat_id=user_id, message_id=sent_message.message_id)
             logger.info(f"Deleted message {sent_message.message_id} from chat {user_id}.")
 
     except TelegramError as e:
         logger.error(f"Failed to send file to user {user_id}: {e}")
-        # Only reply in the chat where the button was clicked (group/private)
-        await send_and_delete_message(context, query.message.chat.id, "❌ File not found or could not be sent. Please ensure the bot is not blocked in your private chat.")
+        await send_and_delete_message(context, source_chat_id, "❌ File not found or could not be sent. Please ensure the bot is not blocked in your private chat.")
     except Exception as e:
         logger.error(f"An unexpected error occurred while sending the file: {e}")
-        await send_and_delete_message(context, query.message.chat.id, "❌ An unexpected error occurred. Please try again later.")
+        await send_and_delete_message(context, source_chat_id, "❌ An unexpected error occurred. Please try again later.")
 
 
-async def send_all_files_task(query, context, file_list):
+async def send_all_files_task(user_id: int, source_chat_id: int, context: ContextTypes.DEFAULT_TYPE, file_list: list):
     """Background task to send multiple files to the user's private chat and auto-delete them."""
-    user_id = query.from_user.id
-
-    # Send all files
     sent_messages = []
     try:
         for file in file_list:
-            # Ensure it's sent to the user's private chat
             sent_message = await context.bot.copy_message(
                 chat_id=user_id,
                 from_chat_id=file["channel_id"],
                 message_id=file["file_id"],
             )
             sent_messages.append(sent_message.message_id)
-
-            # Send the custom promotional message to the user's private chat after each file (now simplified)
-            await send_and_delete_message(
-                context,
-                user_id,
-                CUSTOM_PROMO_MESSAGE
-            )
-
-            # Add a small delay between sending files to avoid rate limits
+            await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
             await asyncio.sleep(0.5)
 
-        # Send final confirmation message to the chat where the button was clicked
         await send_and_delete_message(
             context,
-            query.message.chat.id,
+            source_chat_id,
             "✅ I have sent all files to you in a private message. The files will be deleted automatically in 5 minutes."
         )
 
-        # Wait for 5 minutes
         await asyncio.sleep(5 * 60)
-
-        # Delete all sent messages
         for message_id in sent_messages:
             try:
-                await context.bot.delete_message(
-                    chat_id=user_id,
-                    message_id=message_id
-                )
+                await context.bot.delete_message(chat_id=user_id, message_id=message_id)
                 logger.info(f"Deleted message {message_id} from chat {user_id}.")
             except TelegramError as e:
                 logger.warning(f"Failed to delete message {message_id} for user {user_id}: {e}")
 
     except TelegramError as e:
         logger.error(f"Failed to send one or more files to user {user_id}: {e}")
-        await send_and_delete_message(context, query.message.chat.id, "❌ One or more files could not be sent. Please ensure the bot is not blocked in your private chat.")
+        await send_and_delete_message(context, source_chat_id, "❌ One or more files could not be sent. Please ensure the bot is not blocked in your private chat.")
     except Exception as e:
         logger.error(f"An unexpected error occurred while sending all files: {e}")
-        await send_and_delete_message(context, query.message.chat.id, "❌ An unexpected error occurred. Please try again later.")
+        await send_and_delete_message(context, source_chat_id, "❌ An unexpected error occurred. Please try again later.")
 
 # ========================
 # COMMAND HANDLERS
@@ -602,12 +589,8 @@ async def handle_verification_step(update: Update, context: ContextTypes.DEFAULT
         # Deliver the originally requested file(s)
         original_request = progress.get("original_request")
         if original_request:
-            # Mock a query object to pass to the sending tasks
-            class MockQuery:
-                def __init__(self, user, message):
-                    self.from_user = user
-                    self.message = message
-            mock_query = MockQuery(user, update.message)
+            # The source chat for a verification-completed action is always the user's private chat.
+            source_chat_id = user.id
 
             if original_request.get("type") == "single":
                 file_id = original_request.get("file_id")
@@ -622,7 +605,7 @@ async def handle_verification_step(update: Update, context: ContextTypes.DEFAULT
                     except Exception: continue
 
                 if file_data:
-                    await send_file_task(mock_query, context, file_data)
+                    asyncio.create_task(send_file_task(user.id, source_chat_id, context, file_data))
                 else:
                     await send_and_delete_message(context, user.id, "❌ The originally requested file could not be found.")
 
@@ -638,9 +621,16 @@ async def handle_verification_step(update: Update, context: ContextTypes.DEFAULT
                     except Exception: continue
 
                 if files_to_send:
-                    await send_all_files_task(mock_query, context, files_to_send)
+                    asyncio.create_task(send_all_files_task(user.id, source_chat_id, context, files_to_send))
                 else:
                     await send_and_delete_message(context, user.id, "❌ The originally requested files could not be found.")
+
+            elif original_request.get("type") == "random":
+                file_data = await get_random_file_from_db()
+                if file_data:
+                    asyncio.create_task(send_file_task(user.id, source_chat_id, context, file_data))
+                else:
+                    await send_and_delete_message(context, user.id, "❌ Could not find a random file after verification. The database might be empty.")
 
         # Clean up the verification progress from the database
         await delete_verification_progress(verification_id)
@@ -725,6 +715,42 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Developed by Kaustav Ray."
     )
     await send_and_delete_message(context, update.effective_chat.id, info_message, parse_mode="Markdown")
+
+
+async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /rand command to send a random file."""
+    if not await bot_can_respond(update, context):
+        return
+    if await is_banned(update.effective_user.id):
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
+        return
+
+    await save_user_info(update.effective_user)
+    if not await check_member_status(update.effective_user.id, context):
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Join Channel: @filestore4u", url="https://t.me/filestore4u")],
+            [InlineKeyboardButton("Join Channel: @code_boost", url="https://t.me/code_boost")],
+            [InlineKeyboardButton("Join Channel: @krbook_official", url="https://t.me/krbook_official")]
+        ])
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
+        return
+
+    user_id = update.effective_user.id
+    is_verified = await is_user_verified(user_id)
+
+    if user_id in ADMINS or is_verified:
+        await send_and_delete_message(context, update.effective_chat.id, "⏳ Fetching a random file for you...")
+
+        file_data = await get_random_file_from_db()
+
+        if file_data:
+            asyncio.create_task(send_file_task(user_id, update.effective_chat.id, context, file_data))
+        else:
+            await send_and_delete_message(context, update.effective_chat.id, "❌ Could not find a random file. The database might be empty.")
+    else:
+        # Start verification process
+        original_request = {"type": "random"}
+        await start_verification_process(context, user_id, update.effective_user.mention_html(), update.effective_chat.id, original_request)
 
 
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1693,14 +1719,11 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
         logger.error(f"Error sending/editing search results page: {e}")
 
 
-async def start_verification_process(context: ContextTypes.DEFAULT_TYPE, query: Update.callback_query, original_request: dict):
+async def start_verification_process(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_mention: str, source_chat_id: int, original_request: dict):
     """
     Starts the 3-step verification process for a user.
     `original_request` should contain the file request details.
     """
-    user_id = query.from_user.id
-    chat_id = query.message.chat.id
-
     verification_id = str(uuid.uuid4())
     progress_data = {
         "_id": verification_id,
@@ -1726,8 +1749,8 @@ async def start_verification_process(context: ContextTypes.DEFAULT_TYPE, query: 
                 f"Step 1 of 3: Open this link to continue:\n{shortened_link}"
             )
             # Notify in group if the request came from a group
-            if chat_id != user_id:
-                 await send_and_delete_message(context, query.message.chat.id, f"✅ {query.from_user.mention_html()}, At first you should start me in private chat. Then please complete the verification in my private chat to get your file.", parse_mode="HTML")
+            if source_chat_id != user_id:
+                 await send_and_delete_message(context, source_chat_id, f"✅ {user_mention}, At first you should start me in private chat. Then please complete the verification in my private chat to get your file.", parse_mode="HTML")
     else:
         await send_and_delete_message(context, user_id, "❌ Could not start the verification process. Please try again later.")
 
@@ -1785,7 +1808,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if temp_client: temp_client.close()
 
                 if file_data:
-                    asyncio.create_task(send_file_task(query, context, file_data))
+                    asyncio.create_task(send_file_task(user_id, query.message.chat.id, context, file_data))
                 else:
                     await send_and_delete_message(context, user_id, "❌ File not found.")
 
@@ -1802,7 +1825,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await send_and_delete_message(context, user_id, "❌ No files found on this page to send.")
                     return
 
-                asyncio.create_task(send_all_files_task(query, context, files_to_send))
+                asyncio.create_task(send_all_files_task(user_id, query.message.chat.id, context, files_to_send))
             return
 
         # --- Start Verification for Non-Admin/Non-Verified Users ---
@@ -1825,7 +1848,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 file_ids = [str(file['_id']) for file in files_to_send]
                 original_request = {"type": "batch", "file_ids": file_ids}
 
-            await start_verification_process(context, query, original_request)
+            await start_verification_process(context, user_id, query.from_user.mention_html(), query.message.chat.id, original_request)
         return
 
     # --- Other Button Logic (Pagination, Start Menu, etc.) ---
@@ -1876,6 +1899,17 @@ def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
+async def auto_restart():
+    """Waits for 8 hours and then restarts the bot to keep it fresh."""
+    # WARNING: This is a simple, forceful restart method. It's used here as a
+    # specific workaround for simple hosting environments. In a production
+    # setup, it is highly recommended to use a proper process manager like
+    # systemd or supervisord to handle restarts gracefully.
+    await asyncio.sleep(8 * 60 * 60)  # 8 hours = 28800 seconds
+    logger.info("--- Auto-restarting bot after 8 hours ---")
+    # Replace the current process with a new one
+    os.execv(sys.executable, ['python'] + sys.argv)
+
 def main():
     if not connect_to_mongo():
         logger.critical("Failed to connect to the initial MongoDB URI. Exiting.")
@@ -1886,6 +1920,13 @@ def main():
     web_server_thread.daemon = True
     web_server_thread.start()
     logger.info("Web server started in a background thread.")
+
+    # Create the application instance
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # Schedule the auto-restart task within the application's event loop
+    app.create_task(auto_restart())
+    logger.info("Auto-restart task scheduled for 8 hours.")
 
     # Create TTL index for pending verifications (48-hour expiry - 48*60*60 = 172800)
     for uri in VERIFICATION_DB_URIS:
@@ -1910,12 +1951,11 @@ def main():
             logger.error(f"Could not create TTL index for verified users at {uri}: {e}")
 
 
-    app = Application.builder().token(BOT_TOKEN).build()
-
     # Command Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("info", info_command))
+    app.add_handler(CommandHandler("rand", rand_command))
     app.add_handler(CommandHandler("log", log_command))
     app.add_handler(CommandHandler("total_users", total_users_command))
     app.add_handler(CommandHandler("total_files", total_files_command))
