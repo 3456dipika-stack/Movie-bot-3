@@ -22,7 +22,7 @@ import math
 import re
 import io
 import time
-import requests
+import httpx
 import uuid
 import datetime
 from flask import Flask
@@ -316,21 +316,22 @@ async def get_shortened_link(url_to_shorten: str):
     full_api_url = f"{api_url}?api={api_key}&url={url_to_shorten}"
 
     try:
-        response = requests.get(full_api_url)
-        response.raise_for_status()
-        # The response is JSON, so we parse it and extract the URL.
-        data = response.json()
-        if data.get("status") == "success" and data.get("shortenedUrl"):
-            return data["shortenedUrl"]
-        else:
-            logger.error(f"Shortener API returned an unexpected response: {response.text}")
-            return "Error: Invalid response from shortener API."
-    except requests.exceptions.JSONDecodeError:
-        logger.error(f"Failed to decode JSON from shortener API. Response was: {response.text}")
-        return "Error: Could not parse response from shortener API."
-    except requests.exceptions.RequestException as e:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(full_api_url)
+            response.raise_for_status()
+            # The response is JSON, so we parse it and extract the URL.
+            data = response.json()
+            if data.get("status") == "success" and data.get("shortenedUrl"):
+                return data["shortenedUrl"]
+            else:
+                logger.error(f"Shortener API returned an unexpected response: {response.text}")
+                return "Error: Invalid response from shortener API."
+    except httpx.RequestError as e:
         logger.error(f"Failed to get shortened link: {e}")
         return f"Error: Could not shorten link. {e}"
+    except Exception as e:
+        logger.error(f"Failed to decode or process response from shortener API: {e}")
+        return "Error: Could not parse response from shortener API."
 
 async def save_verification_progress(verification_data):
     """Saves or updates a user's verification progress in all verification DBs."""
