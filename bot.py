@@ -109,6 +109,7 @@ users_col = None
 banned_users_col = None
 groups_col = None
 referrals_col = None
+referred_users_col = None
 
 
 # In-memory caches for performance
@@ -495,7 +496,7 @@ def connect_to_mongo():
     Initializes connection pools for all database URIs specified in the config.
     It also sets the initial active database connection.
     """
-    global mongo_clients, db, files_col, users_col, banned_users_col, groups_col, referrals_col, current_uri_index
+    global mongo_clients, db, files_col, users_col, banned_users_col, groups_col, referrals_col, referred_users_col, current_uri_index
 
     # Consolidate all unique URIs
     all_uris = set(MONGO_URIS + GROUPS_DB_URIS + VERIFICATION_DB_URIS + VERIFIED_USERS_DB_URIS)
@@ -531,6 +532,7 @@ def connect_to_mongo():
             if referral_client:
                 referral_db = referral_client["referral_db"]
                 referrals_col = referral_db["referrals"]
+                referred_users_col = referral_db["referred_users"]
                 logger.info("Successfully connected to Referral MongoDB.")
             else:
                 logger.critical("Failed to connect to the Referral MongoDB URI. Referral system will not function.")
@@ -740,26 +742,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.effective_user
 
-    # Check if the user is new *before* saving their info. This is crucial for the referral system.
-    is_new_user = users_col is not None and users_col.find_one({"_id": user.id}) is None
-
     # Handle deep links
     if context.args:
         payload = context.args[0]
 
         # 1. Referral Link Handling
-        if payload.startswith("ref_") and is_new_user:
+        if payload.startswith("ref_"):
             try:
                 referrer_id = int(payload.split("_", 1)[1])
 
-                if referrer_id != user.id:  # Cannot refer yourself
-                    if referrals_col is not None:
+                # Check if the user has already been referred
+                is_already_referred = referred_users_col is not None and referred_users_col.find_one({"_id": user.id}) is not None
+
+                if referrer_id != user.id and not is_already_referred:
+                    if referrals_col is not None and referred_users_col is not None:
                         # Increment referrer's count
                         referrals_col.update_one(
                             {"_id": referrer_id},
                             {"$inc": {"referral_count": 1}},
                             upsert=True
                         )
+
+                        # Mark the user as referred
+                        referred_users_col.insert_one({"_id": user.id})
 
                         # Check if they hit the target
                         referrer_data = referrals_col.find_one({"_id": referrer_id})
