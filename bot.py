@@ -2016,9 +2016,14 @@ async def main_async():
                 db = client["verification_db"]
                 collection = db["pending_verifications"]
                 collection.create_index("createdAt", expireAfterSeconds=172800) # 48 hours
-                logger.info(f"TTL index on 'pending_verifications' collection ensured for 48 hours at URI: {uri}")
+                logger.info(f"TTL index on 'pending_verifications' collection ensured for 48 hours at ...{uri[-20:]}")
+        except PyMongoError as e:
+            if e.code == 85: # IndexOptionsConflict
+                logger.warning(f"TTL index for 'pending_verifications' at ...{uri[-20:]} already exists with different options. Skipping.")
+            else:
+                logger.error(f"Could not create TTL index for pending verifications at ...{uri[-20:]}: {e}")
         except Exception as e:
-            logger.error(f"Could not create TTL index for pending verifications at {uri}: {e}")
+            logger.error(f"An unexpected error occurred during TTL index creation for pending_verifications at ...{uri[-20:]}: {e}")
 
     # Create TTL index for verified users (24-hour expiry - 24*60*60 = 86400)
     for uri in VERIFIED_USERS_DB_URIS:
@@ -2028,9 +2033,14 @@ async def main_async():
                 db = client["verified_users_db"]
                 collection = db["verified_users"]
                 collection.create_index("verifiedAt", expireAfterSeconds=86400) # 24 hours
-                logger.info(f"TTL index on 'verified_users' collection ensured for 24 hours at URI: {uri}")
+                logger.info(f"TTL index on 'verified_users' collection ensured for 24 hours at ...{uri[-20:]}")
+        except PyMongoError as e:
+            if e.code == 85: # IndexOptionsConflict
+                logger.warning(f"TTL index for 'verified_users' at ...{uri[-20:]} already exists with different options. Skipping.")
+            else:
+                logger.error(f"Could not create TTL index for verified_users at ...{uri[-20:]}: {e}")
         except Exception as e:
-            logger.error(f"Could not create TTL index for verified users at {uri}: {e}")
+            logger.error(f"An unexpected error occurred during TTL index creation for verified_users at ...{uri[-20:]}: {e}")
 
 
     # Command Handlers
