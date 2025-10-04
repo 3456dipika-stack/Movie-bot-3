@@ -1644,9 +1644,6 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
         return
 
-    # Send instant feedback
-    await send_and_delete_message(context, update.effective_chat.id, f"🔍 Searching all {len(MONGO_URIS)} databases...")
-
     raw_query = update.message.text.strip()
     # Normalize query for better fuzzy search
     normalized_query = raw_query.replace("_", " ").replace(".", " ").replace("-", " ").strip()
