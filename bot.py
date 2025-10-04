@@ -35,12 +35,12 @@ from functools import lru_cache
 # ========================
 # CONFIG
 # ========================
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-DB_CHANNEL = int(os.environ.get("DB_CHANNEL"))
-LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL"))
+BOT_TOKEN = "7657898593:AAEqWdlNE9bAVikWAnHRYyQyj0BCXy6qUmc"  # Bot Token
+DB_CHANNEL = -1002975831610  # Database channel
+LOG_CHANNEL = -1002988891392  # Channel to log user queries
 # Channels users must join for access
-JOIN_CHECK_CHANNEL = [int(channel) for channel in os.environ.get("JOIN_CHECK_CHANNEL", "").split(',') if channel]
-ADMINS = [int(admin) for admin in os.environ.get("ADMINS", "").split(',') if admin]        # Admin IDs
+JOIN_CHECK_CHANNEL = [-1002692055617, -1002551875503, -1002839913869]
+ADMINS = [6705618257]        # Admin IDs
 
 # Custom promotional message (Simplified as per the last request)
 REACTIONS = ["👀", "😱", "🔥", "😍", "🎉", "🥰", "😇", "⚡"]
@@ -78,11 +78,25 @@ HELP_TEXT = (
 )
 
 # A list of MongoDB URIs to use. Add as many as you need.
-MONGO_URIS = [uri for uri in os.environ.get("MONGO_URIS", "").split(',') if uri]
-GROUPS_DB_URIS = [uri for uri in os.environ.get("GROUPS_DB_URIS", "").split(',') if uri]
-VERIFICATION_DB_URIS = [uri for uri in os.environ.get("VERIFICATION_DB_URIS", "").split(',') if uri]
-VERIFIED_USERS_DB_URIS = [uri for uri in os.environ.get("VERIFIED_USERS_DB_URIS", "").split(',') if uri]
-REFERRAL_DB_URI = os.environ.get("REFERRAL_DB_URI")
+MONGO_URIS = [
+    "mongodb+srv://bf44tb5_db_user:RhyeHAHsTJeuBPNg@cluster0.lgao3zu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://28c2kqa_db_user:IL51mem7W6g37mA5@cluster0.np0ffl0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://l6yml41j_db_user:2m5HFR6CTdSb46ck@cluster0.nztdqdr.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://7afcwd6_db_user:sOthaH9f53BDRBoj@cluster0.m9d2zcy.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://x05bq9p_db_user:gspcMp5M0NQnu9zt@cluster0.bhxd7dp.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://fxexlqy_db_user:O5HiYEZee2pyUyGK@cluster0.ugozkfc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://vnitm0p_db_user:rz1Szy1U9fwJMkis@cluster0.apaqaef.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://mezojs2_db_user:gvT09wd648MfGP5W@cluster0.c5hejzo.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://wspprp42_db_user:Mac4xZJVHOxkKzK0@cluster0.cgxjhpt.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://r7fyvtce_db_user:5HSZsUd5TTQSpU5V@cluster0.9l4g28a.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://kvr0j2wk_db_user:wH8jseEyDSHcm35L@cluster0.mwhmepa.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://4yxduh8_db_user:45Lyw2zgcCUhxTQd@cluster0.afxbyeo.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://zdqmu6ir_db_user:gNGahCtkshRz0T6i@cluster0.ihuljbb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+]
+GROUPS_DB_URIS = ["mongodb+srv://6p5e2y8_db_user:MxRFLhQ534AI3rfQ@cluster0.j9hcylx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
+VERIFICATION_DB_URIS = ["mongodb+srv://7eqsiq8_db_user:h6nYmRKbgHJDALUA@cluster0.wuntcv8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
+VERIFIED_USERS_DB_URIS = ["mongodb+srv://q9amkpx_db_user:xuLc5qUJAJMBCtDH@cluster0.mvwgcxd.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
+REFERRAL_DB_URI = "mongodb+srv://qy8gjiw_db_user:JjryWhQV4CYtzcYo@cluster0.lkkvli8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 current_uri_index = 0
 
 # Centralized connection manager
