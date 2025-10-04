@@ -35,12 +35,12 @@ from functools import lru_cache
 # ========================
 # CONFIG
 # ========================
-BOT_TOKEN = "7657898593:AAEqWdlNE9bAVikWAnHRYyQyj0BCXy6qUmc"  # Bot Token
-DB_CHANNEL = -1002975831610  # Database channel
-LOG_CHANNEL = -1002988891392  # Channel to log user queries
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+DB_CHANNEL = int(os.environ.get("DB_CHANNEL"))
+LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL"))
 # Channels users must join for access
-JOIN_CHECK_CHANNEL = [-1002692055617, -1002551875503, -1002839913869]
-ADMINS = [6705618257]        # Admin IDs
+JOIN_CHECK_CHANNEL = [int(channel) for channel in os.environ.get("JOIN_CHECK_CHANNEL", "").split(',') if channel]
+ADMINS = [int(admin) for admin in os.environ.get("ADMINS", "").split(',') if admin]        # Admin IDs
 
 # Custom promotional message (Simplified as per the last request)
 REACTIONS = ["👀", "😱", "🔥", "😍", "🎉", "🥰", "😇", "⚡"]
@@ -57,6 +57,7 @@ HELP_TEXT = (
     "• `/start` - Start the bot.\n"
     "• `/help` - Show this help message.\n"
     "• `/info` - Get bot information.\n"
+    "• `/refer` - Get your referral link to earn premium access.\n"
     "• `/request <name>` - Request a file.\n"
     "• Send any text to search for a file (admins only in private chat).\n\n"
     "**Admin Commands:**\n"
@@ -77,24 +78,11 @@ HELP_TEXT = (
 )
 
 # A list of MongoDB URIs to use. Add as many as you need.
-MONGO_URIS = [
-    "mongodb+srv://bf44tb5_db_user:RhyeHAHsTJeuBPNg@cluster0.lgao3zu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://28c2kqa_db_user:IL51mem7W6g37mA5@cluster0.np0ffl0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://l6yml41j_db_user:2m5HFR6CTdSb46ck@cluster0.nztdqdr.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://7afcwd6_db_user:sOthaH9f53BDRBoj@cluster0.m9d2zcy.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://x05bq9p_db_user:gspcMp5M0NQnu9zt@cluster0.bhxd7dp.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://fxexlqy_db_user:O5HiYEZee2pyUyGK@cluster0.ugozkfc.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://vnitm0p_db_user:rz1Szy1U9fwJMkis@cluster0.apaqaef.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://mezojs2_db_user:gvT09wd648MfGP5W@cluster0.c5hejzo.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://wspprp42_db_user:Mac4xZJVHOxkKzK0@cluster0.cgxjhpt.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://r7fyvtce_db_user:5HSZsUd5TTQSpU5V@cluster0.9l4g28a.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://kvr0j2wk_db_user:wH8jseEyDSHcm35L@cluster0.mwhmepa.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://4yxduh8_db_user:45Lyw2zgcCUhxTQd@cluster0.afxbyeo.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://zdqmu6ir_db_user:gNGahCtkshRz0T6i@cluster0.ihuljbb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-]
-GROUPS_DB_URIS = ["mongodb+srv://6p5e2y8_db_user:MxRFLhQ534AI3rfQ@cluster0.j9hcylx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
-VERIFICATION_DB_URIS = ["mongodb+srv://7eqsiq8_db_user:h6nYmRKbgHJDALUA@cluster0.wuntcv8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
-VERIFIED_USERS_DB_URIS = ["mongodb+srv://q9amkpx_db_user:xuLc5qUJAJMBCtDH@cluster0.mvwgcxd.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
+MONGO_URIS = [uri for uri in os.environ.get("MONGO_URIS", "").split(',') if uri]
+GROUPS_DB_URIS = [uri for uri in os.environ.get("GROUPS_DB_URIS", "").split(',') if uri]
+VERIFICATION_DB_URIS = [uri for uri in os.environ.get("VERIFICATION_DB_URIS", "").split(',') if uri]
+VERIFIED_USERS_DB_URIS = [uri for uri in os.environ.get("VERIFIED_USERS_DB_URIS", "").split(',') if uri]
+REFERRAL_DB_URI = os.environ.get("REFERRAL_DB_URI")
 current_uri_index = 0
 
 # Centralized connection manager
@@ -106,6 +94,7 @@ files_col = None
 users_col = None
 banned_users_col = None
 groups_col = None
+referrals_col = None
 
 
 # In-memory caches for performance
@@ -262,17 +251,31 @@ async def bot_can_respond(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return False
 
 async def is_user_verified(user_id: int):
-    """Checks if a user is in the verified list, with in-memory caching."""
+    """
+    Checks if a user is verified, either through premium status or standard 24-hour verification.
+    Caches the result for performance.
+    """
     # 1. Check cache first
     if user_id in verified_user_cache:
-        # Check if the cache entry has expired
         if time.time() < verified_user_cache[user_id]:
             return True
         else:
-            # Entry expired, remove it
             del verified_user_cache[user_id]
 
-    # 2. If not in cache or expired, check DB
+    # 2. Check for Premium Status (from referrals)
+    if referrals_col is not None:
+        try:
+            user_referral_data = referrals_col.find_one({"_id": user_id})
+            if user_referral_data and "premium_until" in user_referral_data:
+                # The TTL index will automatically remove expired documents, so if it exists, it's valid.
+                expiry_time = time.time() + (30 * 24 * 60 * 60) # Cache for 30 days
+                verified_user_cache[user_id] = expiry_time
+                logger.info(f"User {user_id} has premium access. Cached.")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to check premium status for user {user_id}: {e}")
+
+    # 3. If not premium, check standard 24-hour verification
     for uri in VERIFIED_USERS_DB_URIS:
         client = mongo_clients.get(uri)
         if not client:
@@ -282,7 +285,7 @@ async def is_user_verified(user_id: int):
             collection = db["verified_users"]
             user_doc = collection.find_one({"_id": user_id})
             if user_doc:
-                # 3. Store result in cache with a 24-hour expiry
+                # Store result in cache with a 24-hour expiry
                 expiry_time = time.time() + (24 * 60 * 60)
                 verified_user_cache[user_id] = expiry_time
                 logger.info(f"User {user_id} is verified (24hr access). Cached.")
@@ -478,10 +481,12 @@ def connect_to_mongo():
     Initializes connection pools for all database URIs specified in the config.
     It also sets the initial active database connection.
     """
-    global mongo_clients, db, files_col, users_col, banned_users_col, groups_col, current_uri_index
+    global mongo_clients, db, files_col, users_col, banned_users_col, groups_col, referrals_col, current_uri_index
 
     # Consolidate all unique URIs
     all_uris = set(MONGO_URIS + GROUPS_DB_URIS + VERIFICATION_DB_URIS + VERIFIED_USERS_DB_URIS)
+    if REFERRAL_DB_URI:
+        all_uris.add(REFERRAL_DB_URI)
 
     for uri in all_uris:
         try:
@@ -505,6 +510,19 @@ def connect_to_mongo():
         users_col = db["users"]
         banned_users_col = db["banned_users"]
         # groups_col is managed separately as it's in a different database
+
+        # Connect to the referral database
+        if REFERRAL_DB_URI:
+            referral_client = mongo_clients.get(REFERRAL_DB_URI)
+            if referral_client:
+                referral_db = referral_client["referral_db"]
+                referrals_col = referral_db["referrals"]
+                logger.info("Successfully connected to Referral MongoDB.")
+            else:
+                logger.critical("Failed to connect to the Referral MongoDB URI. Referral system will not function.")
+        else:
+            logger.warning("REFERRAL_DB_URI not set. Referral system will be disabled.")
+
         logger.info(f"Successfully connected to initial MongoDB at index {current_uri_index}.")
         return True
     else:
@@ -699,23 +717,70 @@ async def handle_verification_step(update: Update, context: ContextTypes.DEFAULT
         await delete_verification_progress(verification_id)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the /start command, including verification deep links."""
+    """Handles the /start command, including verification and referral deep links."""
     if not await bot_can_respond(update, context):
         return
     if await is_banned(update.effective_user.id):
         await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
         return
-    await save_user_info(update.effective_user)
+
     user = update.effective_user
 
-    # Handle deep links for the verification process
-    if context.args:
-        verification_id = context.args[0]
-        # It's a verification link, handle it
-        await handle_verification_step(update, context, verification_id)
-        return
+    # Check if the user is new *before* saving their info. This is crucial for the referral system.
+    is_new_user = users_col is not None and users_col.find_one({"_id": user.id}) is None
 
-    # Standard start message if no deep link
+    # Handle deep links
+    if context.args:
+        payload = context.args[0]
+
+        # 1. Referral Link Handling
+        if payload.startswith("ref_") and is_new_user:
+            try:
+                referrer_id = int(payload.split("_", 1)[1])
+
+                if referrer_id != user.id:  # Cannot refer yourself
+                    if referrals_col is not None:
+                        # Increment referrer's count
+                        referrals_col.update_one(
+                            {"_id": referrer_id},
+                            {"$inc": {"referral_count": 1}},
+                            upsert=True
+                        )
+
+                        # Check if they hit the target
+                        referrer_data = referrals_col.find_one({"_id": referrer_id})
+                        if referrer_data and referrer_data.get("referral_count", 0) >= 10:
+                            # Grant premium and reset count
+                            referrals_col.update_one(
+                                {"_id": referrer_id},
+                                {"$set": {
+                                    "premium_until": datetime.datetime.utcnow() + datetime.timedelta(days=30),
+                                    "referral_count": 0
+                                }}
+                            )
+                            # Notify referrer
+                            try:
+                                await context.bot.send_message(
+                                    chat_id=referrer_id,
+                                    text="🎉 **Congratulations!**\n\nYou've successfully referred 10 users and earned **1 month of premium access**! Enjoy the bot without ads or verification."
+                                )
+                            except TelegramError as e:
+                                logger.warning(f"Could not notify referrer {referrer_id} about premium status: {e}")
+            except (IndexError, ValueError) as e:
+                logger.error(f"Could not parse referral link payload: {payload} - {e}")
+            # The new user will fall through to the standard welcome message.
+
+        # 2. Verification Link Handling
+        elif not payload.startswith("ref_"):
+            # This must be a verification link, pass it to the handler
+            await handle_verification_step(update, context, payload)
+            await save_user_info(user)  # Save user info after they attempt verification
+            return  # Stop further execution of the start command
+
+    # Save user info now. If they were referred, they are now marked as "existing".
+    await save_user_info(user)
+
+    # Standard start message if no deep link or after referral processing
     bot_username = context.bot.username
     owner_id = ADMINS[0] if ADMINS else None
 
@@ -814,6 +879,39 @@ async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Start verification process
         original_request = {"type": "random"}
         await start_verification_process(context, user_id, update.effective_user.mention_html(), update.effective_chat.id, original_request)
+
+
+async def refer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /refer command to get a referral link."""
+    if not await bot_can_respond(update, context):
+        return
+    if await is_banned(update.effective_user.id):
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
+        return
+
+    user_id = update.effective_user.id
+    bot_username = context.bot.username
+    referral_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+
+    if referrals_col is None:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ The referral system is currently unavailable. Please try again later.")
+        return
+
+    try:
+        user_referral_data = referrals_col.find_one({"_id": user_id})
+        referral_count = user_referral_data.get("referral_count", 0) if user_referral_data else 0
+
+        referral_message = (
+            "**Earn Free Premium Access!**\n\n"
+            "Share your unique referral link with your friends. For every 10 users who join using your link, you'll receive **1 month of premium access** (no ads, no verification)!\n\n"
+            f"**Your Referral Link:**\n`{referral_link}`\n\n"
+            f"**Your Current Referral Count:** {referral_count}/10"
+        )
+        await send_and_delete_message(context, update.effective_chat.id, referral_message, parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"Error in /refer command for user {user_id}: {e}")
+        await send_and_delete_message(context, update.effective_chat.id, "❌ An error occurred while fetching your referral data.")
 
 
 async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2042,12 +2140,26 @@ async def main_async():
         except Exception as e:
             logger.error(f"An unexpected error occurred during TTL index creation for verified_users at ...{uri[-20:]}: {e}")
 
+    # Create TTL index for premium users (expires at the time specified in the 'premium_until' field)
+    if referrals_col is not None:
+        try:
+            referrals_col.create_index("premium_until", expireAfterSeconds=0)
+            logger.info("TTL index on 'referrals' collection for premium users ensured.")
+        except PyMongoError as e:
+            if e.code == 85: # IndexOptionsConflict
+                logger.warning("TTL index for 'referrals' collection already exists with different options. Skipping.")
+            else:
+                logger.error(f"Could not create TTL index for referrals: {e}")
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during TTL index creation for referrals: {e}")
+
 
     # Command Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("info", info_command))
     app.add_handler(CommandHandler("rand", rand_command))
+    app.add_handler(CommandHandler("refer", refer_command))
     app.add_handler(CommandHandler("request", request_command))
     app.add_handler(CommandHandler("log", log_command))
     app.add_handler(CommandHandler("total_users", total_users_command))
