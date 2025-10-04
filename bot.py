@@ -43,6 +43,7 @@ JOIN_CHECK_CHANNEL = [-1002692055617, -1002551875503, -1002839913869]
 ADMINS = [6705618257]        # Admin IDs
 
 # Custom promotional message (Simplified as per the last request)
+REACTIONS = ["👀", "😱", "🔥", "😍", "🎉", "🥰", "😇", "⚡"]
 CUSTOM_PROMO_MESSAGE = (
     "Credit to Prince Kaustav Ray\n\n"
     "Join our main channel: @filestore4u\n"
@@ -56,6 +57,7 @@ HELP_TEXT = (
     "• `/start` - Start the bot.\n"
     "• `/help` - Show this help message.\n"
     "• `/info` - Get bot information.\n"
+    "• `/request <name>` - Request a file.\n"
     "• Send any text to search for a file (admins only in private chat).\n\n"
     "**Admin Commands:**\n"
     "• `/log` - Show recent error logs.\n"
@@ -804,6 +806,57 @@ async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Start verification process
         original_request = {"type": "random"}
         await start_verification_process(context, user_id, update.effective_user.mention_html(), update.effective_chat.id, original_request)
+
+
+async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /request command for users to request files."""
+    if not await bot_can_respond(update, context):
+        return
+    if await is_banned(update.effective_user.id):
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
+        return
+
+    user = update.effective_user
+    if not context.args:
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            "Please provide a movie or file name to request.\n\nUsage: `/request <name>`",
+            parse_mode="Markdown"
+        )
+        return
+
+    request_text = " ".join(context.args)
+
+    # Format the message for the log channel
+    log_message = (
+        f"🙏 **New Request**\n\n"
+        f"**From User:** {user.mention_html()}\n"
+        f"**User ID:** `{user.id}`\n"
+        f"**Username:** @{user.username or 'N/A'}\n\n"
+        f"**Request:**\n`{request_text}`"
+    )
+
+    try:
+        # Forward the request to the log channel
+        await context.bot.send_message(
+            chat_id=LOG_CHANNEL,
+            text=log_message,
+            parse_mode="HTML"
+        )
+        # Confirm to the user
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            "✅ Your request has been sent to the admins. They will be notified."
+        )
+    except TelegramError as e:
+        logger.error(f"Failed to process /request command: {e}")
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            "❌ Sorry, there was an error sending your request. Please try again later."
+        )
 
 
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1569,6 +1622,12 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ You are banned from using this bot.")
         return
 
+    # Add reaction to user's message
+    try:
+        await update.message.react(reaction=random.choice(REACTIONS))
+    except TelegramError as e:
+        logger.warning(f"Could not react to message: {e}")
+
     await save_user_info(update.effective_user)
     if not await check_member_status(update.effective_user.id, context):
         # NEW: Updated to show buttons for all channels
@@ -1961,6 +2020,7 @@ async def main_async():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("info", info_command))
     app.add_handler(CommandHandler("rand", rand_command))
+    app.add_handler(CommandHandler("request", request_command))
     app.add_handler(CommandHandler("log", log_command))
     app.add_handler(CommandHandler("total_users", total_users_command))
     app.add_handler(CommandHandler("total_files", total_files_command))
