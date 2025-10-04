@@ -534,6 +534,14 @@ async def save_user_info(user: Update.effective_user):
 # TASK FUNCTIONS (FOR BACKGROUND EXECUTION)
 # ========================
 
+async def react_to_message_task(update: Update):
+    """Background task to react to a message without blocking."""
+    try:
+        await update.message.react(reaction=random.choice(REACTIONS))
+    except TelegramError as e:
+        logger.warning(f"Could not react to message: {e}")
+
+
 async def send_file_task(user_id: int, source_chat_id: int, context: ContextTypes.DEFAULT_TYPE, file_data: dict):
     """Background task to send a single file to the user's private chat and auto-delete it."""
     try:
@@ -1622,11 +1630,8 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ You are banned from using this bot.")
         return
 
-    # Add reaction to user's message
-    try:
-        await update.message.react(reaction=random.choice(REACTIONS))
-    except TelegramError as e:
-        logger.warning(f"Could not react to message: {e}")
+    # Add reaction to user's message in the background
+    asyncio.create_task(react_to_message_task(update))
 
     await save_user_info(update.effective_user)
     if not await check_member_status(update.effective_user.id, context):
@@ -1639,8 +1644,11 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
         return
 
-    # Send instant feedback
-    await send_and_delete_message(context, update.effective_chat.id, f"🔍 Searching all {len(MONGO_URIS)} databases...")
+    # Send initial status message that will be edited with progress
+    status_message = await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="⏳ Searching..."
+    )
 
     raw_query = update.message.text.strip()
     # Normalize query for better fuzzy search
@@ -1672,7 +1680,17 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     preliminary_results = []
 
     # Iterate over ALL URIs for search
+    total_dbs = len(MONGO_URIS)
     for idx, uri in enumerate(MONGO_URIS):
+        try:
+            await context.bot.edit_message_text(
+                chat_id=status_message.chat.id,
+                message_id=status_message.message_id,
+                text=f"⏳ Searching... ({idx + 1}/{total_dbs} databases searched)"
+            )
+        except TelegramError:  # Ignore if message can't be edited
+            pass
+
         client = mongo_clients.get(uri)
         if not client:
             continue
@@ -1691,7 +1709,14 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- Fuzzy Ranking (to ensure the best match is first) ---
 
     if not preliminary_results:
-        await send_and_delete_message(context, update.effective_chat.id, "❌ No relevant files found. For your query contact @kaustavhibot")
+        try:
+            await context.bot.edit_message_text(
+                chat_id=status_message.chat.id,
+                message_id=status_message.message_id,
+                text="❌ No relevant files found. For your query contact @kaustavhibot"
+            )
+        except TelegramError:
+            pass # Ignore if message was deleted
         return
 
     results_with_score = []
@@ -1718,17 +1743,33 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     final_results = [result[0] for result in sorted_results[:50]]
 
     if not final_results:
-        await send_and_delete_message(context, update.effective_chat.id, "❌ No relevant files found after filtering by relevance. For your query contact @kaustavhibot")
+        try:
+            await context.bot.edit_message_text(
+                chat_id=status_message.chat.id,
+                message_id=status_message.message_id,
+                text="❌ No relevant files found after filtering by relevance. For your query contact @kaustavhibot"
+            )
+        except TelegramError:
+            pass # Ignore if message was deleted
         return
 
     # Pass the full result list to the pagination function for consistency
     context.user_data['search_results'] = final_results
     context.user_data['search_query'] = raw_query
 
-    await send_results_page(update.effective_chat.id, final_results, 0, context, raw_query, new_message=True)
+    # Edit the status message to show the final results
+    await send_results_page(
+        chat_id=status_message.chat.id,
+        results=final_results,
+        page=0,
+        context=context,
+        query=raw_query,
+        message_id=status_message.message_id
+    )
 
 
-async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, message_id=None, new_message=False):
+async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, message_id: int):
+    """Edits a message to show a paginated list of search results."""
     start, end = page * 10, (page + 1) * 10
     page_results = results[start:end]
 
@@ -1767,33 +1808,15 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
     reply_markup = InlineKeyboardMarkup(buttons)
 
     try:
-        if new_message or message_id is None:
-            # Send as a new message (used for initial search result)
-            sent_message, deletion_task = await send_and_delete_message(
-                context,
-                chat_id,
-                text,
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
-            )
-            if sent_message and deletion_task:
-                # Store the message ID and its deletion task so we can manage it during pagination
-                context.chat_data['last_search_message'] = {
-                    'message_id': sent_message.message_id,
-                    'deletion_task': deletion_task
-                }
-        else:
-            # Edit the existing message (used for pagination)
-            # Note: Edited messages don't get a new deletion timer. The original timer still applies.
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=text,
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
-            )
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
     except TelegramError as e:
-        logger.error(f"Error sending/editing search results page: {e}")
+        logger.error(f"Error editing search results page: {e}")
 
 
 async def start_verification_process(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_mention: str, source_chat_id: int, original_request: dict):
@@ -1931,25 +1954,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("page_"):
         _, page_str, search_query = data.split("_", 2)
         page = int(page_str)
-        if 'last_search_message' in context.chat_data:
-            old_task = context.chat_data['last_search_message'].get('deletion_task')
-            if old_task and not old_task.done():
-                old_task.cancel()
+
         final_results = context.user_data.get('search_results')
         if not final_results:
-            await send_and_delete_message(context, query.message.chat.id, "⚠️ Search results have expired. Please search again.")
+            await query.answer("⚠️ Search results have expired. Please search again.", show_alert=True)
             return
+
         await send_results_page(
-            query.message.chat.id,
-            final_results,
-            page,
-            context,
-            search_query,
-            message_id=query.message.message_id,
-            new_message=False
+            chat_id=query.message.chat.id,
+            results=final_results,
+            page=page,
+            context=context,
+            query=search_query,
+            message_id=query.message.message_id
         )
-        new_deletion_task = asyncio.create_task(delete_message_after_delay(context, query.message.chat.id, query.message.message_id, 5 * 60))
-        context.chat_data['last_search_message']['deletion_task'] = new_deletion_task
 
     elif data == "start_about":
         await query.message.delete()
