@@ -534,6 +534,14 @@ async def save_user_info(user: Update.effective_user):
 # TASK FUNCTIONS (FOR BACKGROUND EXECUTION)
 # ========================
 
+async def react_to_message_task(update: Update):
+    """Background task to react to a message without blocking."""
+    try:
+        await update.message.react(reaction=random.choice(REACTIONS))
+    except TelegramError as e:
+        logger.warning(f"Could not react to message: {e}")
+
+
 async def send_file_task(user_id: int, source_chat_id: int, context: ContextTypes.DEFAULT_TYPE, file_data: dict):
     """Background task to send a single file to the user's private chat and auto-delete it."""
     try:
@@ -1622,11 +1630,8 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ You are banned from using this bot.")
         return
 
-    # Add reaction to user's message
-    try:
-        await update.message.react(reaction=random.choice(REACTIONS))
-    except TelegramError as e:
-        logger.warning(f"Could not react to message: {e}")
+    # Add reaction to user's message in the background
+    asyncio.create_task(react_to_message_task(update))
 
     await save_user_info(update.effective_user)
     if not await check_member_status(update.effective_user.id, context):
