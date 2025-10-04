@@ -19,6 +19,7 @@ from telegram.ext import (
 from telegram.error import TelegramError
 from fuzzywuzzy import fuzz
 import math
+import random
 import re
 import io
 import time
@@ -29,6 +30,7 @@ from flask import Flask
 from threading import Thread
 import os
 import sys
+from functools import lru_cache
 
 # ========================
 # CONFIG
@@ -41,6 +43,7 @@ JOIN_CHECK_CHANNEL = [-1002692055617, -1002551875503, -1002839913869]
 ADMINS = [6705618257]        # Admin IDs
 
 # Custom promotional message (Simplified as per the last request)
+REACTIONS = ["👀", "😱", "🔥", "😍", "🎉", "🥰", "😇", "⚡"]
 CUSTOM_PROMO_MESSAGE = (
     "Credit to Prince Kaustav Ray\n\n"
     "Join our main channel: @filestore4u\n"
@@ -54,6 +57,7 @@ HELP_TEXT = (
     "• `/start` - Start the bot.\n"
     "• `/help` - Show this help message.\n"
     "• `/info` - Get bot information.\n"
+    "• `/request <name>` - Request a file.\n"
     "• Send any text to search for a file (admins only in private chat).\n\n"
     "**Admin Commands:**\n"
     "• `/log` - Show recent error logs.\n"
@@ -93,12 +97,20 @@ VERIFICATION_DB_URIS = ["mongodb+srv://7eqsiq8_db_user:h6nYmRKbgHJDALUA@cluster0
 VERIFIED_USERS_DB_URIS = ["mongodb+srv://q9amkpx_db_user:xuLc5qUJAJMBCtDH@cluster0.mvwgcxd.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
 current_uri_index = 0
 
-mongo_client = None
+# Centralized connection manager
+mongo_clients = {} # Will store MongoClient instances for each URI
+
+# Pointers to the collections of the *currently active* database
 db = None
 files_col = None
 users_col = None
 banned_users_col = None
 groups_col = None
+
+
+# In-memory caches for performance
+verified_user_cache = {}  # {user_id: expiry_timestamp}
+banned_user_cache = {}    # {user_id: bool}
 
 
 # Logging setup with an in-memory buffer for the /log command
@@ -122,24 +134,31 @@ def home():
 # ========================
 
 async def get_random_file_from_db():
-    """Fetches a single random file document from any of the available databases."""
-    for uri in MONGO_URIS:
-        temp_client = None
+    """
+    Fetches a single random file document from any of the available file databases
+    using the centralized connection pool.
+    """
+    # Shuffle URIs to distribute the load for random queries
+    shuffled_uris = random.sample(MONGO_URIS, len(MONGO_URIS))
+
+    for uri in shuffled_uris:
+        client = mongo_clients.get(uri)
+        if not client:
+            logger.warning(f"Skipping disconnected DB for random file fetch: ...{uri[-20:]}")
+            continue
+
         try:
-            temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-            temp_db = temp_client["telegram_files"]
-            temp_files_col = temp_db["files"]
+            db = client["telegram_files"]
+            files_col = db["files"]
             # Use $sample for efficient random document retrieval
             pipeline = [{"$sample": {"size": 1}}]
-            result = list(temp_files_col.aggregate(pipeline))
+            result = list(files_col.aggregate(pipeline))
             if result:
                 return result[0]  # Return the first document found
         except Exception as e:
-            logger.error(f"DB Error while fetching random file: {e}")
+            logger.error(f"DB Error while fetching random file from ...{uri[-20:]}: {e}")
             continue # Try the next URI
-        finally:
-            if temp_client:
-                temp_client.close()
+
     return None # Return None if no file is found in any DB
 
 def escape_markdown(text: str) -> str:
@@ -202,9 +221,19 @@ async def check_member_status(user_id, context: ContextTypes.DEFAULT_TYPE):
     return True
 
 async def is_banned(user_id):
-    """Check if the user is banned."""
+    """Check if the user is banned, with in-memory caching."""
+    # 1. Check cache first
+    if user_id in banned_user_cache:
+        return banned_user_cache[user_id]
+
+    # 2. If not in cache, check DB
     if banned_users_col is not None:
-        return banned_users_col.find_one({"_id": user_id}) is not None
+        is_banned_status = banned_users_col.find_one({"_id": user_id}) is not None
+        # 3. Store result in cache
+        banned_user_cache[user_id] = is_banned_status
+        return is_banned_status
+
+    # Default to not banned if DB is unavailable
     return False
 
 async def bot_can_respond(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -233,33 +262,47 @@ async def bot_can_respond(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return False
 
 async def is_user_verified(user_id: int):
-    """Checks if a user is in the verified list and their verification is not expired. Verification is now for 24 hours."""
+    """Checks if a user is in the verified list, with in-memory caching."""
+    # 1. Check cache first
+    if user_id in verified_user_cache:
+        # Check if the cache entry has expired
+        if time.time() < verified_user_cache[user_id]:
+            return True
+        else:
+            # Entry expired, remove it
+            del verified_user_cache[user_id]
+
+    # 2. If not in cache or expired, check DB
     for uri in VERIFIED_USERS_DB_URIS:
-        temp_client = None
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
         try:
-            temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-            db = temp_client["verified_users_db"]
+            db = client["verified_users_db"]
             collection = db["verified_users"]
-            if collection.find_one({"_id": user_id}):
-                logger.info(f"User {user_id} is verified (24hr access).")
+            user_doc = collection.find_one({"_id": user_id})
+            if user_doc:
+                # 3. Store result in cache with a 24-hour expiry
+                expiry_time = time.time() + (24 * 60 * 60)
+                verified_user_cache[user_id] = expiry_time
+                logger.info(f"User {user_id} is verified (24hr access). Cached.")
                 return True # Found in one DB, that's enough
         except Exception as e:
-            logger.error(f"Failed to check verification status for user {user_id} at {uri}: {e}")
+            logger.error(f"Failed to check verification status for user {user_id} at ...{uri[-20:]}: {e}")
             continue
-        finally:
-            if temp_client:
-                temp_client.close()
+
     logger.info(f"User {user_id} is not verified.")
     return False
 
 async def mark_user_as_verified(user_id: int):
-    """Adds a user to the verified list with a 24-hour expiry."""
+    """Adds a user to the verified list using the connection pool and updates the cache."""
     success_count = 0
     for uri in VERIFIED_USERS_DB_URIS:
-        temp_client = None
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
         try:
-            temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-            db = temp_client["verified_users_db"]
+            db = client["verified_users_db"]
             collection = db["verified_users"]
             # The TTL index will handle the 24-hour expiry based on 'verifiedAt'
             collection.update_one(
@@ -269,36 +312,34 @@ async def mark_user_as_verified(user_id: int):
             )
             success_count += 1
         except Exception as e:
-            logger.error(f"Failed to mark user {user_id} as verified at {uri}: {e}")
+            logger.error(f"Failed to mark user {user_id} as verified at ...{uri[-20:]}: {e}")
             continue
-        finally:
-            if temp_client:
-                temp_client.close()
 
     if success_count > 0:
-        logger.info(f"Marked user {user_id} as verified for 24 hours in {success_count}/{len(VERIFIED_USERS_DB_URIS)} DBs.")
+        # Update cache on success
+        expiry_time = time.time() + (24 * 60 * 60)
+        verified_user_cache[user_id] = expiry_time
+        logger.info(f"Marked user {user_id} as verified for 24 hours in {success_count}/{len(VERIFIED_USERS_DB_URIS)} DBs. Cache updated.")
         return True
     else:
         logger.error(f"Failed to mark user {user_id} as verified in any DB.")
         return False
 
 async def get_shortener_config():
-    """Fetches the shortener config from the dedicated database, trying all URIs."""
+    """Fetches the shortener config from the dedicated database using the connection pool."""
     for uri in VERIFICATION_DB_URIS:
-        temp_client = None
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
         try:
-            temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-            temp_db = temp_client["verification_db"]
-            config_col = temp_db["config"]
+            db = client["verification_db"]
+            config_col = db["config"]
             config = config_col.find_one({"_id": "shortener_config"})
             if config:
                 return config  # Return on first success
         except Exception as e:
-            logger.error(f"Failed to get shortener config from {uri}: {e}")
+            logger.error(f"Failed to get shortener config from ...{uri[-20:]}: {e}")
             continue  # Try next URI
-        finally:
-            if temp_client:
-                temp_client.close()
     logger.error("All shortener DB URIs failed.")
     return None
 
@@ -334,15 +375,16 @@ async def get_shortened_link(url_to_shorten: str):
         return "Error: Could not parse response from shortener API."
 
 async def save_verification_progress(verification_data):
-    """Saves or updates a user's verification progress in all verification DBs."""
+    """Saves or updates a user's verification progress using the connection pool."""
     verification_data['createdAt'] = datetime.datetime.utcnow() # Reset timer on each step
 
     success_count = 0
     for uri in VERIFICATION_DB_URIS:
-        temp_client = None
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
         try:
-            temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-            db = temp_client["verification_db"]
+            db = client["verification_db"]
             collection = db["pending_verifications"]
             collection.update_one(
                 {"_id": verification_data["_id"]},
@@ -351,48 +393,41 @@ async def save_verification_progress(verification_data):
             )
             success_count += 1
         except Exception as e:
-            logger.error(f"Failed to save verification progress to {uri}: {e}")
+            logger.error(f"Failed to save verification progress to ...{uri[-20:]}: {e}")
             continue
-        finally:
-            if temp_client:
-                temp_client.close()
 
     return success_count > 0
 
 async def get_verification_progress(verification_id: str):
-    """Fetches a user's verification progress from the first available DB."""
+    """Fetches a user's verification progress using the connection pool."""
     for uri in VERIFICATION_DB_URIS:
-        temp_client = None
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
         try:
-            temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-            db = temp_client["verification_db"]
+            db = client["verification_db"]
             collection = db["pending_verifications"]
             progress = collection.find_one({"_id": verification_id})
             if progress:
                 return progress
         except Exception as e:
-            logger.error(f"Failed to get verification progress from {uri}: {e}")
+            logger.error(f"Failed to get verification progress from ...{uri[-20:]}: {e}")
             continue
-        finally:
-            if temp_client:
-                temp_client.close()
     return None
 
 async def delete_verification_progress(verification_id: str):
-    """Deletes a verification record from all DBs upon completion or failure."""
+    """Deletes a verification record from all DBs using the connection pool."""
     for uri in VERIFICATION_DB_URIS:
-        temp_client = None
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
         try:
-            temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-            db = temp_client["verification_db"]
+            db = client["verification_db"]
             collection = db["pending_verifications"]
             collection.delete_one({"_id": verification_id})
         except Exception as e:
-            logger.error(f"Failed to delete verification progress from {uri}: {e}")
+            logger.error(f"Failed to delete verification progress from ...{uri[-20:]}: {e}")
             continue
-        finally:
-            if temp_client:
-                temp_client.close()
 
 
 async def send_and_delete_message(
@@ -439,25 +474,41 @@ async def delete_message_after_delay(context, chat_id, message_id, delay):
 
 
 def connect_to_mongo():
-    """Connect to the MongoDB URI at the current index."""
-    global mongo_client, db, files_col, users_col, banned_users_col, groups_col
-    try:
-        uri = MONGO_URIS[current_uri_index]
-        # Set serverSelectionTimeoutMS to 5 seconds to fail fast if the connection is dead
-        mongo_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-        # The ismaster command is cheap and does not require auth.
-        # It forces the client to check the connection.
-        mongo_client.admin.command('ismaster')
+    """
+    Initializes connection pools for all database URIs specified in the config.
+    It also sets the initial active database connection.
+    """
+    global mongo_clients, db, files_col, users_col, banned_users_col, groups_col, current_uri_index
 
-        db = mongo_client["telegram_files"]
+    # Consolidate all unique URIs
+    all_uris = set(MONGO_URIS + GROUPS_DB_URIS + VERIFICATION_DB_URIS + VERIFIED_USERS_DB_URIS)
+
+    for uri in all_uris:
+        try:
+            # Create a client with connection pooling
+            client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+            # The ismaster command is cheap and forces the client to check the connection.
+            client.admin.command('ismaster')
+            mongo_clients[uri] = client
+            logger.info(f"Successfully created connection pool for ...{uri[-20:]}")
+        except PyMongoError as e:
+            logger.critical(f"FATAL: Could not connect to MongoDB at {uri}. Error: {e}")
+            mongo_clients[uri] = None # Mark as failed
+
+    # Set the initial active database for file operations
+    initial_uri = MONGO_URIS[current_uri_index]
+    initial_client = mongo_clients.get(initial_uri)
+
+    if initial_client:
+        db = initial_client["telegram_files"]
         files_col = db["files"]
         users_col = db["users"]
         banned_users_col = db["banned_users"]
-        groups_col = db["groups"]
-        logger.info(f"Successfully connected to MongoDB at index {current_uri_index}.")
+        # groups_col is managed separately as it's in a different database
+        logger.info(f"Successfully connected to initial MongoDB at index {current_uri_index}.")
         return True
-    except (PyMongoError, IndexError) as e:
-        logger.error(f"Failed to connect to MongoDB at index {current_uri_index}: {e}")
+    else:
+        logger.critical(f"Failed to connect to the initial MongoDB URI at index {current_uri_index}. Bot may not function correctly.")
         return False
 
 async def save_user_info(user: Update.effective_user):
@@ -598,11 +649,12 @@ async def handle_verification_step(update: Update, context: ContextTypes.DEFAULT
                 file_id = original_request.get("file_id")
                 file_data = None
                 for uri in MONGO_URIS:
+                    client = mongo_clients.get(uri)
+                    if not client:
+                        continue
                     try:
-                        client = MongoClient(uri, serverSelectionTimeoutMS=2000)
                         db = client["telegram_files"]
                         file_data = db["files"].find_one({"_id": ObjectId(file_id)})
-                        client.close()
                         if file_data: break
                     except Exception: continue
 
@@ -615,11 +667,12 @@ async def handle_verification_step(update: Update, context: ContextTypes.DEFAULT
                 file_ids = [ObjectId(fid) for fid in original_request.get("file_ids", [])]
                 files_to_send = []
                 for uri in MONGO_URIS:
+                    client = mongo_clients.get(uri)
+                    if not client:
+                        continue
                     try:
-                        client = MongoClient(uri, serverSelectionTimeoutMS=2000)
                         db = client["telegram_files"]
                         files_to_send.extend(list(db["files"].find({"_id": {"$in": file_ids}})))
-                        client.close()
                     except Exception: continue
 
                 if files_to_send:
@@ -755,6 +808,57 @@ async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start_verification_process(context, user_id, update.effective_user.mention_html(), update.effective_chat.id, original_request)
 
 
+async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /request command for users to request files."""
+    if not await bot_can_respond(update, context):
+        return
+    if await is_banned(update.effective_user.id):
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
+        return
+
+    user = update.effective_user
+    if not context.args:
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            "Please provide a movie or file name to request.\n\nUsage: `/request <name>`",
+            parse_mode="Markdown"
+        )
+        return
+
+    request_text = " ".join(context.args)
+
+    # Format the message for the log channel
+    log_message = (
+        f"🙏 **New Request**\n\n"
+        f"**From User:** {user.mention_html()}\n"
+        f"**User ID:** `{user.id}`\n"
+        f"**Username:** @{user.username or 'N/A'}\n\n"
+        f"**Request:**\n`{request_text}`"
+    )
+
+    try:
+        # Forward the request to the log channel
+        await context.bot.send_message(
+            chat_id=LOG_CHANNEL,
+            text=log_message,
+            parse_mode="HTML"
+        )
+        # Confirm to the user
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            "✅ Your request has been sent to the admins. They will be notified."
+        )
+    except TelegramError as e:
+        logger.error(f"Failed to process /request command: {e}")
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            "❌ Sorry, there was an error sending your request. Please try again later."
+        )
+
+
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to show recent error logs."""
     if not await bot_can_respond(update, context):
@@ -848,12 +952,13 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # 2. Get File Counts per URI and total file count
         for idx, uri in enumerate(MONGO_URIS):
-            temp_client = None
+            client = mongo_clients.get(uri)
+            if not client:
+                uri_stats[idx] = "❌ Not connected"
+                continue
             try:
-                # Temporarily connect to each URI
-                temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-                temp_client.admin.command('ismaster')
-                temp_db = temp_client["telegram_files"]
+                # Use the existing client from the pool
+                temp_db = client["telegram_files"]
                 temp_files_col = temp_db["files"]
                 # Get file count
                 file_count = temp_files_col.estimated_document_count()
@@ -872,10 +977,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 total_file_count_all_db += file_count # Accumulate count
             except Exception as e:
                 logger.warning(f"Failed to connect or get file count for URI #{idx + 1}: {e}")
-                uri_stats[idx] = "❌ Failed to connect/read"
-            finally:
-                if temp_client:
-                    temp_client.close()
+                uri_stats[idx] = "❌ Failed to read"
 
         # 3. Format the output message
         stats_message = (
@@ -948,11 +1050,11 @@ async def find_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Iterate through all URIs
     for idx, uri in enumerate(MONGO_URIS):
-        temp_client = None
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
         try:
-            temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-            temp_client.admin.command('ismaster')
-            temp_db = temp_client["telegram_files"]
+            temp_db = client["telegram_files"]
             temp_files_col = temp_db["files"]
 
             # Use regex for case-insensitive search
@@ -961,9 +1063,6 @@ async def find_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"Found {len(results)} files in URI #{idx + 1}")
         except Exception as e:
             logger.error(f"Error finding file on URI #{idx + 1}: {e}")
-        finally:
-            if temp_client:
-                temp_client.close()
 
 
     if not all_results:
@@ -1029,6 +1128,8 @@ async def ban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"$set": {"_id": user_to_ban_id}},
             upsert=True
         )
+        # Update cache
+        banned_user_cache[user_to_ban_id] = True
         await send_and_delete_message(context, update.effective_chat.id, f"🔨 User `{user_to_ban_id}` has been banned.")
     except Exception as e:
         logger.error(f"Error banning user: {e}")
@@ -1058,6 +1159,8 @@ async def unban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         result = banned_users_col.delete_one({"_id": user_to_unban_id})
 
         if result.deleted_count == 1:
+            # Update cache
+            banned_user_cache[user_to_unban_id] = False
             await send_and_delete_message(context, update.effective_chat.id, f"✅ User `{user_to_unban_id}` has been unbanned.")
         else:
             await send_and_delete_message(context, update.effective_chat.id, f"❌ User `{user_to_unban_id}` was not found in the banned list.")
@@ -1127,20 +1230,18 @@ async def grp_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TY
     all_group_ids = set()
     logger.info("Fetching all group IDs for group broadcast from all group DBs...")
     for uri in GROUPS_DB_URIS:
-        temp_client = None
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
         try:
-            temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-            temp_db = temp_client["telegram_groups"]
+            temp_db = client["telegram_groups"]
             temp_groups_col = temp_db["groups"]
 
             group_docs = temp_groups_col.find({}, {"_id": 1})
             for doc in group_docs:
                 all_group_ids.add(doc['_id'])
         except Exception as e:
-            logger.error(f"Failed to fetch group IDs from {uri}: {e}")
-        finally:
-            if temp_client:
-                temp_client.close()
+            logger.error(f"Failed to fetch group IDs from ...{uri[-20:]}: {e}")
 
     if not all_group_ids:
         await send_and_delete_message(context, update.effective_chat.id, "❌ No groups found in the database to broadcast to.")
@@ -1213,10 +1314,11 @@ async def addlinkshort_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
     success_count = 0
     for uri in VERIFICATION_DB_URIS:
-        temp_client = None
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
         try:
-            temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-            temp_db = temp_client["verification_db"]
+            temp_db = client["verification_db"]
             config_col = temp_db["config"]
 
             # Store the config as a single document
@@ -1227,10 +1329,7 @@ async def addlinkshort_command(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             success_count += 1
         except Exception as e:
-            logger.error(f"Failed to save shortener config to {uri}: {e}")
-        finally:
-            if temp_client:
-                temp_client.close()
+            logger.error(f"Failed to save shortener config to ...{uri[-20:]}: {e}")
 
     await send_and_delete_message(context, update.effective_chat.id, f"✅ Link shortener details saved to {success_count}/{len(VERIFICATION_DB_URIS)} databases.")
 
@@ -1270,10 +1369,11 @@ async def index_channel_task(context: ContextTypes.DEFAULT_TYPE, channel_id: int
             # Save metadata to all file databases for redundancy
             saved_to_any_db = False
             for uri in MONGO_URIS:
-                temp_client = None
+                client = mongo_clients.get(uri)
+                if not client:
+                    continue
                 try:
-                    temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-                    temp_db = temp_client["telegram_files"]
+                    temp_db = client["telegram_files"]
                     temp_files_col = temp_db["files"]
                     # THE CRITICAL FIX: Save original message_id and channel_id
                     temp_files_col.insert_one({
@@ -1284,10 +1384,7 @@ async def index_channel_task(context: ContextTypes.DEFAULT_TYPE, channel_id: int
                     })
                     saved_to_any_db = True
                 except Exception as e:
-                    logger.error(f"DB Error while indexing for URI {uri[:40]}: {e}")
-                finally:
-                    if temp_client:
-                        temp_client.close()
+                    logger.error(f"DB Error while indexing for URI ...{uri[-20:]}: {e}")
 
             if saved_to_any_db:
                 indexed_count += 1
@@ -1323,35 +1420,31 @@ async def on_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TY
         if new_status in ["administrator", "creator"]:
             logger.info(f"Bot was added/promoted as admin in group {group_id}. Saving to all groups databases.")
             for uri in GROUPS_DB_URIS:
-                temp_client = None
+                client = mongo_clients.get(uri)
+                if not client:
+                    continue
                 try:
-                    temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-                    temp_db = temp_client["telegram_groups"]
+                    temp_db = client["telegram_groups"]
                     temp_groups_col = temp_db["groups"]
                     temp_groups_col.update_one({"_id": group_id}, {"$set": {"_id": group_id}}, upsert=True)
-                    logger.info(f"Successfully saved/updated group {group_id} in groups DB at {uri}.")
+                    logger.info(f"Successfully saved/updated group {group_id} in groups DB at ...{uri[-20:]}.")
                 except Exception as e:
-                    logger.error(f"Failed to save group {group_id} to groups DB at {uri}: {e}")
-                finally:
-                    if temp_client:
-                        temp_client.close()
+                    logger.error(f"Failed to save group {group_id} to groups DB at ...{uri[-20:]}: {e}")
 
         # If the bot was kicked, left, or demoted from admin
         elif old_status in ["administrator", "creator"] and new_status not in ["administrator", "creator"]:
             logger.info(f"Bot was removed or demoted from admin in group {group_id}. Removing from all groups databases.")
             for uri in GROUPS_DB_URIS:
-                temp_client = None
+                client = mongo_clients.get(uri)
+                if not client:
+                    continue
                 try:
-                    temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-                    temp_db = temp_client["telegram_groups"]
+                    temp_db = client["telegram_groups"]
                     temp_groups_col = temp_db["groups"]
                     temp_groups_col.delete_one({"_id": group_id})
-                    logger.info(f"Successfully removed group {group_id} from groups DB at {uri}.")
+                    logger.info(f"Successfully removed group {group_id} from groups DB at ...{uri[-20:]}.")
                 except Exception as e:
-                    logger.error(f"Failed to remove group {group_id} from groups DB at {uri}: {e}")
-                finally:
-                    if temp_client:
-                        temp_client.close()
+                    logger.error(f"Failed to remove group {group_id} from groups DB at ...{uri[-20:]}: {e}")
 
 
 # ========================
@@ -1359,7 +1452,7 @@ async def on_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TY
 # ========================
 
 async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin sends file to bot -> save to channel + DB"""
+    """Admin sends file to bot -> save to channel + DB. Uses connection pooling."""
     user_id = update.message.from_user.id
     if user_id not in ADMINS:
         return
@@ -1380,26 +1473,22 @@ async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     clean_name = raw_name.replace("_", " ").replace(".", " ").replace("-", " ") if raw_name else "Unknown"
 
-    global current_uri_index, files_col
+    global current_uri_index, db, files_col, users_col, banned_users_col
 
     saved = False
-    temp_uri_index = current_uri_index
     # Start the loop from the current active index and wrap around to try all
     for i in range(len(MONGO_URIS)):
-        idx = (temp_uri_index + i) % len(MONGO_URIS)
+        idx = (current_uri_index + i) % len(MONGO_URIS)
         uri_to_try = MONGO_URIS[idx]
 
-        temp_client = None
+        client = mongo_clients.get(uri_to_try)
+        if not client:
+            logger.warning(f"Skipping disconnected DB for file save: ...{uri_to_try[-20:]}")
+            continue
+
         try:
-            # If we're not on the currently connected URI, we need a new client
-            if idx != current_uri_index or files_col is None:
-                temp_client = MongoClient(uri_to_try, serverSelectionTimeoutMS=5000)
-                temp_client.admin.command('ismaster')
-                temp_db = temp_client["telegram_files"]
-                temp_files_col = temp_db["files"]
-            else:
-                # Use the global client
-                temp_files_col = files_col
+            temp_db = client["telegram_files"]
+            temp_files_col = temp_db["files"]
 
             # Try to save metadata
             temp_files_col.insert_one({
@@ -1409,31 +1498,22 @@ async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "file_size": file.file_size,
             })
 
-            # If successful, set the current global index to this one
+            # If successful and this is not the current active DB, switch to it.
             if idx != current_uri_index:
-                global mongo_client, db, users_col, banned_users_col
-                # Close old client if needed
-                if mongo_client:
-                    mongo_client.close()
-
-                # Update global connection pointers
-                mongo_client = temp_client
-                db = temp_db
-                files_col = temp_files_col
                 current_uri_index = idx
+                db = temp_db
+                files_col = temp_db["files"]
+                users_col = temp_db["users"]
+                banned_users_col = temp_db["banned_users"]
                 logger.info(f"Switched active MongoDB connection to index {current_uri_index}.")
 
             await send_and_delete_message(context, update.effective_chat.id, f"✅ Saved to DB #{idx + 1}: {clean_name}")
             saved = True
-            break
+            break # Exit loop on success
         except Exception as e:
             logger.error(f"Error saving file with URI #{idx + 1}: {e}")
             if idx == current_uri_index and len(MONGO_URIS) > 1:
                  await send_and_delete_message(context, update.effective_chat.id, f"⚠️ Primary DB failed. Trying next available URI...")
-        finally:
-            if temp_client and idx != current_uri_index:
-                temp_client.close()
-
 
     if not saved:
         logger.error("All MongoDB URIs have been tried and failed.")
@@ -1441,7 +1521,7 @@ async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_file_from_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin sends file directly to channel -> save to DB"""
+    """Admin sends file directly to channel -> save to DB. Uses connection pooling."""
     user_id = update.message.from_user.id
     chat_id = update.message.chat.id
 
@@ -1462,24 +1542,22 @@ async def save_file_from_channel(update: Update, context: ContextTypes.DEFAULT_T
 
     clean_name = raw_name.replace("_", " ").replace(".", " ").replace("-", " ") if raw_name else "Unknown"
 
-    global current_uri_index, files_col
+    global current_uri_index, db, files_col, users_col, banned_users_col
 
     saved = False
-    temp_uri_index = current_uri_index
-
+    # Start the loop from the current active index and wrap around to try all
     for i in range(len(MONGO_URIS)):
-        idx = (temp_uri_index + i) % len(MONGO_URIS)
+        idx = (current_uri_index + i) % len(MONGO_URIS)
         uri_to_try = MONGO_URIS[idx]
 
-        temp_client = None
+        client = mongo_clients.get(uri_to_try)
+        if not client:
+            logger.warning(f"Skipping disconnected DB for channel file save: ...{uri_to_try[-20:]}")
+            continue
+
         try:
-            if idx != current_uri_index or files_col is None:
-                temp_client = MongoClient(uri_to_try, serverSelectionTimeoutMS=5000)
-                temp_client.admin.command('ismaster')
-                temp_db = temp_client["telegram_files"]
-                temp_files_col = temp_db["files"]
-            else:
-                temp_files_col = files_col
+            temp_db = client["telegram_files"]
+            temp_files_col = temp_db["files"]
 
             # Try to save metadata
             temp_files_col.insert_one({
@@ -1489,16 +1567,13 @@ async def save_file_from_channel(update: Update, context: ContextTypes.DEFAULT_T
                 "file_size": file.file_size,
             })
 
-            # If successful, set the current global index to this one
+            # If successful and this is not the current active DB, switch to it.
             if idx != current_uri_index:
-                global mongo_client, db, users_col, banned_users_col
-                if mongo_client:
-                    mongo_client.close()
-
-                mongo_client = temp_client
-                db = temp_db
-                files_col = temp_files_col
                 current_uri_index = idx
+                db = temp_db
+                files_col = temp_db["files"]
+                users_col = temp_db["users"]
+                banned_users_col = temp_db["banned_users"]
                 logger.info(f"Switched active MongoDB connection to index {current_uri_index}.")
 
             # Send **INSTANT** success notification to the admin
@@ -1521,9 +1596,6 @@ async def save_file_from_channel(update: Update, context: ContextTypes.DEFAULT_T
                     await send_and_delete_message(context, user_id, "⚠️ Primary DB failed. Trying next available URI...")
                 except TelegramError:
                     pass
-        finally:
-            if temp_client and idx != current_uri_index:
-                temp_client.close()
 
     if not saved:
         logger.error("All MongoDB URIs have been tried and failed.")
@@ -1549,6 +1621,12 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await is_banned(update.effective_user.id):
         await update.message.reply_text("❌ You are banned from using this bot.")
         return
+
+    # Add reaction to user's message
+    try:
+        await update.message.react(reaction=random.choice(REACTIONS))
+    except TelegramError as e:
+        logger.warning(f"Could not react to message: {e}")
 
     await save_user_info(update.effective_user)
     if not await check_member_status(update.effective_user.id, context):
@@ -1595,12 +1673,12 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Iterate over ALL URIs for search
     for idx, uri in enumerate(MONGO_URIS):
-        temp_client = None
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
         try:
-            # Temporarily connect to each URI
-            temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-            temp_client.admin.command('ismaster')
-            temp_db = temp_client["telegram_files"]
+            # Use the existing client from the pool
+            temp_db = client["telegram_files"]
             temp_files_col = temp_db["files"]
 
             # Query the database with the broad filter
@@ -1609,9 +1687,6 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         except Exception as e:
             logger.error(f"MongoDB search query failed on URI #{idx + 1}: {e}")
-        finally:
-            if temp_client:
-                temp_client.close()
 
     # --- Fuzzy Ranking (to ensure the best match is first) ---
 
@@ -1797,17 +1872,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 file_id_str = data.split("_", 1)[1]
                 file_data = None
                 for uri in MONGO_URIS:
-                    temp_client = None
+                    client = mongo_clients.get(uri)
+                    if not client:
+                        continue
                     try:
-                        temp_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-                        temp_db = temp_client["telegram_files"]
+                        temp_db = client["telegram_files"]
                         temp_files_col = temp_db["files"]
                         file_data = temp_files_col.find_one({"_id": ObjectId(file_id_str)})
                         if file_data: break
                     except Exception as e:
                         logger.error(f"DB Error while fetching file {file_id_str} for verified user: {e}")
-                    finally:
-                        if temp_client: temp_client.close()
 
                 if file_data:
                     asyncio.create_task(send_file_task(user_id, query.message.chat.id, context, file_data))
@@ -1919,7 +1993,8 @@ async def main_async():
     # Create TTL index for pending verifications (48-hour expiry - 48*60*60 = 172800)
     for uri in VERIFICATION_DB_URIS:
         try:
-            with MongoClient(uri, serverSelectionTimeoutMS=5000) as client:
+            client = mongo_clients.get(uri)
+            if client:
                 db = client["verification_db"]
                 collection = db["pending_verifications"]
                 collection.create_index("createdAt", expireAfterSeconds=172800) # 48 hours
@@ -1930,7 +2005,8 @@ async def main_async():
     # Create TTL index for verified users (24-hour expiry - 24*60*60 = 86400)
     for uri in VERIFIED_USERS_DB_URIS:
         try:
-            with MongoClient(uri, serverSelectionTimeoutMS=5000) as client:
+            client = mongo_clients.get(uri)
+            if client:
                 db = client["verified_users_db"]
                 collection = db["verified_users"]
                 collection.create_index("verifiedAt", expireAfterSeconds=86400) # 24 hours
@@ -1944,6 +2020,7 @@ async def main_async():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("info", info_command))
     app.add_handler(CommandHandler("rand", rand_command))
+    app.add_handler(CommandHandler("request", request_command))
     app.add_handler(CommandHandler("log", log_command))
     app.add_handler(CommandHandler("total_users", total_users_command))
     app.add_handler(CommandHandler("total_files", total_files_command))
@@ -1987,27 +2064,20 @@ async def main_async():
     await app.start()
     await app.updater.start_polling(poll_interval=1, timeout=10, drop_pending_updates=True)
 
-    # Wait for 8 hours
-    logger.info("Bot is running. Restart scheduled in 8 hours.")
-    await asyncio.sleep(8 * 60 * 60)
+    # Keep the bot running indefinitely until a signal is received
+    logger.info("Bot is running. Press Ctrl-C to stop.")
+    await asyncio.Future()  # This will run forever
 
-    # Gracefully shut down the bot
-    logger.info("Shutting down bot for scheduled restart...")
-    await app.updater.stop()
-    await app.stop()
-    await app.shutdown()
-    logger.info("Bot has been shut down gracefully.")
 
 if __name__ == "__main__":
-    while True:
-        try:
-            asyncio.run(main_async())
-            logger.info("--- Auto-restarting bot after 8 hours ---")
-            # A brief pause before restarting
-            time.sleep(1)
-        except KeyboardInterrupt:
-            logger.info("Bot shut down manually.")
-            break
-        except Exception as e:
-            logger.critical(f"Bot crashed with critical error: {e}. Restarting in 15 seconds...")
-            time.sleep(15)
+    try:
+        asyncio.run(main_async())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot shut down initiated.")
+    finally:
+        # Gracefully close all MongoDB connections
+        logger.info("Closing all database connections...")
+        for client in mongo_clients.values():
+            if client:
+                client.close()
+        logger.info("All database connections closed. Exiting.")
