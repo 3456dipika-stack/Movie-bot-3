@@ -1849,7 +1849,7 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         score = fuzz.WRatio(normalized_query, file['file_name'])
 
         # Keep results that have a score above 60 for better relevance.
-        if score > 60:
+        if score > 50:
             results_with_score.append((file, score))
             unique_files.add(file_key)
 
