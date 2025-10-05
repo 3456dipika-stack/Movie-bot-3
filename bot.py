@@ -1845,8 +1845,12 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if file_key in unique_files:
             continue
 
-        # Use WRatio for a more robust score that handles partial strings and other variations well.
-        score = fuzz.WRatio(normalized_query, file['file_name'])
+        # Check for an exact match first to prioritize it
+        if normalized_query.lower() == file['file_name'].lower():
+            score = 101 # Give a score higher than any possible fuzzy score
+        else:
+            # Use WRatio for a more robust score that handles partial strings and other variations well.
+            score = fuzz.WRatio(normalized_query, file['file_name'])
 
         # Keep results that have a score above 60 for better relevance.
         if score > 60:
