@@ -41,6 +41,7 @@ LOG_CHANNEL = -1002988891392  # Channel to log user queries
 # Channels users must join for access
 JOIN_CHECK_CHANNEL = [-1002692055617, -1002551875503, -1002839913869]
 ADMINS = [6705618257]        # Admin IDs
+PM_SEARCH_ENABLED = False   # Controls whether non-admins can search in PM
 
 # Custom promotional message (Simplified as per the last request)
 REACTIONS = ["👀", "😱", "🔥", "😍", "🎉", "🥰", "😇", "⚡"]
@@ -1413,6 +1414,26 @@ async def index_channel_command(update: Update, context: ContextTypes.DEFAULT_TY
     asyncio.create_task(index_channel_task(context, channel_id, skip_messages, update.effective_chat.id))
     await send_and_delete_message(context, update.effective_chat.id, "✅ Indexing has started in the background. I will notify you when it's complete.")
 
+async def pm_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to enable PM search for all users."""
+    global PM_SEARCH_ENABLED
+    if update.effective_user.id not in ADMINS:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
+        return
+    PM_SEARCH_ENABLED = True
+    await send_and_delete_message(context, update.effective_chat.id, "✅ Private message search has been enabled for all users.")
+
+
+async def pm_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to disable PM search for all users."""
+    global PM_SEARCH_ENABLED
+    if update.effective_user.id not in ADMINS:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
+        return
+    PM_SEARCH_ENABLED = False
+    await send_and_delete_message(context, update.effective_chat.id, "✅ Private message search has been disabled for all users.")
+
+
 async def addlinkshort_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to set the link shortener API details on all verification DBs."""
     if update.effective_user.id not in ADMINS:
@@ -1727,8 +1748,8 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await bot_can_respond(update, context):
         return
 
-    # In private chat, only admins can search for files.
-    if update.effective_chat.type == "private" and update.effective_user.id not in ADMINS:
+    # In private chat, only admins can search for files unless PM search is enabled.
+    if update.effective_chat.type == "private" and update.effective_user.id not in ADMINS and not PM_SEARCH_ENABLED:
         await send_and_delete_message(context, update.effective_chat.id, "❌ Use this bot on any group. Sorry, (only admin)")
         return
 
@@ -2186,6 +2207,8 @@ async def main_async():
     app.add_handler(CommandHandler("grp_broadcast", grp_broadcast_command))
     app.add_handler(CommandHandler("index_channel", index_channel_command))
     app.add_handler(CommandHandler("addlinkshort", addlinkshort_command))
+    app.add_handler(CommandHandler("pm_on", pm_on_command))
+    app.add_handler(CommandHandler("pm_off", pm_off_command))
 
     # File and Message Handlers
     # Admin file upload via PM
