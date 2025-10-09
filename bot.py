@@ -1894,20 +1894,29 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['search_results'] = final_results
     context.user_data['search_query'] = raw_query
 
-    # Edit the status message to show the final results
+    # Delete the "Searching..." status message
+    try:
+        await context.bot.delete_message(
+            chat_id=status_message.chat.id,
+            message_id=status_message.message_id
+        )
+    except TelegramError as e:
+        logger.warning(f"Could not delete status message: {e}")
+
+    # Send the results as a new message, replying to the user's query
     await send_results_page(
-        chat_id=status_message.chat.id,
+        chat_id=update.effective_chat.id,
         results=final_results,
         page=0,
         context=context,
         query=raw_query,
-        message_id=status_message.message_id,
-        user_mention=user.mention_html()
+        user_mention=user.mention_html(),
+        reply_to_message_id=update.message.message_id
     )
 
 
-async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, message_id: int, user_mention: str):
-    """Edits a message to show a paginated list of search results."""
+async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, user_mention: str, message_id: int = None, reply_to_message_id: int = None):
+    """Sends or edits a message to show a paginated list of search results."""
     start, end = page * 10, (page + 1) * 10
     page_results = results[start:end]
 
@@ -1950,15 +1959,24 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
     reply_markup = InlineKeyboardMarkup(buttons)
 
     try:
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode="HTML"
-        )
+        if message_id:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode="HTML"
+            )
+        elif reply_to_message_id:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+                reply_to_message_id=reply_to_message_id
+            )
     except TelegramError as e:
-        logger.error(f"Error editing search results page: {e}")
+        logger.error(f"Error sending or editing search results page: {e}")
 
 
 async def start_verification_process(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_mention: str, source_chat_id: int, original_request: dict):
