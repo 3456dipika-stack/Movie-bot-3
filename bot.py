@@ -562,7 +562,9 @@ async def save_user_info(user: Update.effective_user):
 async def react_to_message_task(update: Update):
     """Background task to react to a message without blocking."""
     try:
-        await update.message.react(reaction=random.choice(REACTIONS))
+        message = update.effective_message
+        if message:
+            await message.react(reaction=random.choice(REACTIONS))
     except TelegramError as e:
         logger.warning(f"Could not react to message: {e}")
 
@@ -728,6 +730,7 @@ async def handle_verification_step(update: Update, context: ContextTypes.DEFAULT
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /start command, including verification and referral deep links."""
+    asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
     if await is_banned(update.effective_user.id):
@@ -835,6 +838,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows the help message and available commands."""
+    asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
     if await is_banned(update.effective_user.id):
@@ -845,6 +849,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows information about the bot."""
+    asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
     if await is_banned(update.effective_user.id):
@@ -860,6 +865,7 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /rand command to send a random file."""
+    asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
     if await is_banned(update.effective_user.id):
@@ -896,6 +902,7 @@ async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def refer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /refer command to get a referral link."""
+    asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
     if await is_banned(update.effective_user.id):
@@ -929,6 +936,7 @@ async def refer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /request command for users to request files."""
+    asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
     if await is_banned(update.effective_user.id):
@@ -982,6 +990,7 @@ async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to show recent error logs."""
+    asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
     user_id = update.effective_user.id
@@ -1010,6 +1019,7 @@ async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def total_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to get the total number of users."""
+    asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
     user_id = update.effective_user.id
@@ -1031,6 +1041,7 @@ async def total_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def total_files_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to get the total number of files."""
+    asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
     user_id = update.effective_user.id
@@ -1053,6 +1064,7 @@ async def total_files_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to get bot statistics, including per-URI file counts. (MODIFIED)"""
+    asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
     user_id = update.effective_user.id
@@ -1122,6 +1134,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def delete_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to delete a file by its MongoDB ID."""
+    asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
     user_id = update.effective_user.id
@@ -1153,6 +1166,7 @@ async def delete_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def find_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to find a file by its name and show its ID. Searches ALL URIs."""
+    asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
     user_id = update.effective_user.id
@@ -1201,6 +1215,7 @@ async def find_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def delete_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to delete all files from the database."""
+    asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
     user_id = update.effective_user.id
@@ -1223,6 +1238,7 @@ async def delete_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def ban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to ban a user by their user ID."""
+    asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
     user_id = update.effective_user.id
@@ -1259,6 +1275,7 @@ async def ban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def unban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to unban a user by their user ID."""
+    asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
     user_id = update.effective_user.id
@@ -1295,6 +1312,7 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Broadcasts a message to all users in the database.
     Usage: /broadcast <message>
     """
+    asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
     user_id = update.effective_user.id
@@ -1334,6 +1352,7 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def grp_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to broadcast a message to all connected groups where the bot is an admin."""
+    asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
     user_id = update.effective_user.id
@@ -1394,6 +1413,7 @@ async def grp_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def index_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to index files from a given channel."""
+    asyncio.create_task(react_to_message_task(update))
     if update.effective_user.id not in ADMINS:
         await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
         return
@@ -1423,6 +1443,7 @@ async def index_channel_command(update: Update, context: ContextTypes.DEFAULT_TY
 async def pm_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to enable PM search for all users."""
     global PM_SEARCH_ENABLED
+    asyncio.create_task(react_to_message_task(update))
     if update.effective_user.id not in ADMINS:
         await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
         return
@@ -1433,6 +1454,7 @@ async def pm_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def pm_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to disable PM search for all users."""
     global PM_SEARCH_ENABLED
+    asyncio.create_task(react_to_message_task(update))
     if update.effective_user.id not in ADMINS:
         await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
         return
@@ -1442,6 +1464,7 @@ async def pm_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def addlinkshort_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to set the link shortener API details on all verification DBs."""
+    asyncio.create_task(react_to_message_task(update))
     if update.effective_user.id not in ADMINS:
         await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
         return
@@ -1594,6 +1617,7 @@ async def on_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin sends file to bot -> save to channel + DB. Uses connection pooling."""
+    asyncio.create_task(react_to_message_task(update))
     user_id = update.message.from_user.id
     if user_id not in ADMINS:
         return
@@ -2016,6 +2040,7 @@ async def start_verification_process(context: ContextTypes.DEFAULT_TYPE, user_id
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button clicks with new verification flow."""
+    asyncio.create_task(react_to_message_task(update))
     query = update.callback_query
     await query.answer()
 
