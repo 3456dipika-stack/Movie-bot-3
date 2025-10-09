@@ -26,6 +26,7 @@ import time
 import httpx
 import uuid
 import datetime
+import html
 from flask import Flask
 from threading import Thread
 import os
@@ -566,7 +567,7 @@ async def react_to_message_task(update: Update):
         logger.warning(f"Could not react to message: {e}")
 
 
-async def send_file_task(user_id: int, source_chat_id: int, context: ContextTypes.DEFAULT_TYPE, file_data: dict):
+async def send_file_task(user_id: int, source_chat_id: int, context: ContextTypes.DEFAULT_TYPE, file_data: dict, user_mention: str):
     """Background task to send a single file to the user's private chat and auto-delete it."""
     try:
         sent_message = await context.bot.copy_message(
@@ -577,7 +578,8 @@ async def send_file_task(user_id: int, source_chat_id: int, context: ContextType
 
         if sent_message:
             await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
-            await send_and_delete_message(context, source_chat_id, "✅ I have sent the file to you in a private message. The file will be deleted automatically in 5 minutes.")
+            confirmation_text = f"✅ {user_mention}, I have sent the file to you in a private message. It will be deleted automatically in 5 minutes."
+            await send_and_delete_message(context, source_chat_id, confirmation_text, parse_mode="HTML")
 
             await asyncio.sleep(5 * 60)
             await context.bot.delete_message(chat_id=user_id, message_id=sent_message.message_id)
@@ -591,7 +593,7 @@ async def send_file_task(user_id: int, source_chat_id: int, context: ContextType
         await send_and_delete_message(context, source_chat_id, "❌ An unexpected error occurred. Please try again later.")
 
 
-async def send_all_files_task(user_id: int, source_chat_id: int, context: ContextTypes.DEFAULT_TYPE, file_list: list):
+async def send_all_files_task(user_id: int, source_chat_id: int, context: ContextTypes.DEFAULT_TYPE, file_list: list, user_mention: str):
     """Background task to send multiple files to the user's private chat and auto-delete them."""
     sent_messages = []
     try:
@@ -605,10 +607,12 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
             await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
             await asyncio.sleep(0.5)
 
+        confirmation_text = f"✅ {user_mention}, I have sent all files to you in a private message. They will be deleted automatically in 5 minutes."
         await send_and_delete_message(
             context,
             source_chat_id,
-            "✅ I have sent all files to you in a private message. The files will be deleted automatically in 5 minutes."
+            confirmation_text,
+            parse_mode="HTML"
         )
 
         await asyncio.sleep(5 * 60)
@@ -691,7 +695,7 @@ async def handle_verification_step(update: Update, context: ContextTypes.DEFAULT
                     except Exception: continue
 
                 if file_data:
-                    asyncio.create_task(send_file_task(user.id, source_chat_id, context, file_data))
+                    asyncio.create_task(send_file_task(user.id, source_chat_id, context, file_data, user.mention_html()))
                 else:
                     await send_and_delete_message(context, user.id, "❌ The originally requested file could not be found.")
 
@@ -708,14 +712,14 @@ async def handle_verification_step(update: Update, context: ContextTypes.DEFAULT
                     except Exception: continue
 
                 if files_to_send:
-                    asyncio.create_task(send_all_files_task(user.id, source_chat_id, context, files_to_send))
+                    asyncio.create_task(send_all_files_task(user.id, source_chat_id, context, files_to_send, user.mention_html()))
                 else:
                     await send_and_delete_message(context, user.id, "❌ The originally requested files could not be found.")
 
             elif original_request.get("type") == "random":
                 file_data = await get_random_file_from_db()
                 if file_data:
-                    asyncio.create_task(send_file_task(user.id, source_chat_id, context, file_data))
+                    asyncio.create_task(send_file_task(user.id, source_chat_id, context, file_data, user.mention_html()))
                 else:
                     await send_and_delete_message(context, user.id, "❌ Could not find a random file after verification. The database might be empty.")
 
@@ -881,7 +885,7 @@ async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_data = await get_random_file_from_db()
 
         if file_data:
-            asyncio.create_task(send_file_task(user_id, update.effective_chat.id, context, file_data))
+            asyncio.create_task(send_file_task(user_id, update.effective_chat.id, context, file_data, update.effective_user.mention_html()))
         else:
             await send_and_delete_message(context, update.effective_chat.id, "❌ Could not find a random file. The database might be empty.")
     else:
@@ -960,10 +964,12 @@ async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
         # Confirm to the user
+        confirmation_text = f"✅ {user.mention_html()}, your request has been sent to the admins. They will be notified."
         await send_and_delete_message(
             context,
             update.effective_chat.id,
-            "✅ Your request has been sent to the admins. They will be notified."
+            confirmation_text,
+            parse_mode="HTML"
         )
     except TelegramError as e:
         logger.error(f"Failed to process /request command: {e}")
@@ -1895,27 +1901,32 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page=0,
         context=context,
         query=raw_query,
-        message_id=status_message.message_id
+        message_id=status_message.message_id,
+        user_mention=user.mention_html()
     )
 
 
-async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, message_id: int):
+async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, message_id: int, user_mention: str):
     """Edits a message to show a paginated list of search results."""
     start, end = page * 10, (page + 1) * 10
     page_results = results[start:end]
 
-    # Escape the query string for Markdown
-    escaped_query = escape_markdown(query)
-    text = f"🔎 *Top {len(results)}* Results for: *{escaped_query}*\n(Page {page + 1} / {math.ceil(len(results) / 10)}) (Sorted by Relevance)"
+    # Escape the query string for HTML
+    escaped_query = html.escape(query)
+    text = (
+        f"Hey {user_mention}, here are the top {len(results)} results for: <b>{escaped_query}</b>\n"
+        f"(Page {page + 1} / {math.ceil(len(results) / 10)}) (Sorted by Relevance)"
+    )
     buttons = []
 
     # Add files for the current page
     for idx, file in enumerate(page_results, start=start + 1):
-        # Format the filename first, then escape it for Markdown
         file_size = format_size(file.get("file_size"))
         file_obj_id = str(file['_id'])
 
-        button_text = f"[{file_size}] {file['file_name'][:40]}"
+        # Escape filename for HTML
+        file_name_escaped = html.escape(file['file_name'][:40])
+        button_text = f"[{file_size}] {file_name_escaped}"
         buttons.append(
             [InlineKeyboardButton(button_text, callback_data=f"get_{file_obj_id}")]
         )
@@ -1944,7 +1955,7 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
             message_id=message_id,
             text=text,
             reply_markup=reply_markup,
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     except TelegramError as e:
         logger.error(f"Error editing search results page: {e}")
@@ -2038,7 +2049,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         logger.error(f"DB Error while fetching file {file_id_str} for verified user: {e}")
 
                 if file_data:
-                    asyncio.create_task(send_file_task(user_id, query.message.chat.id, context, file_data))
+                    asyncio.create_task(send_file_task(user_id, query.message.chat.id, context, file_data, query.from_user.mention_html()))
                 else:
                     await send_and_delete_message(context, user_id, "❌ File not found.")
 
@@ -2055,7 +2066,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await send_and_delete_message(context, user_id, "❌ No files found on this page to send.")
                     return
 
-                asyncio.create_task(send_all_files_task(user_id, query.message.chat.id, context, files_to_send))
+                asyncio.create_task(send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html()))
             return
 
         # --- Start Verification for Non-Admin/Non-Verified Users ---
@@ -2097,7 +2108,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page=page,
             context=context,
             query=search_query,
-            message_id=query.message.message_id
+            message_id=query.message.message_id,
+            user_mention=query.from_user.mention_html()
         )
 
     elif data == "start_about":
