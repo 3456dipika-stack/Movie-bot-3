@@ -1829,9 +1829,9 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_delete_message(context, update.effective_chat.id, "❌ Query too short or invalid. Please try a longer search term.")
         return
 
-    # Create an OR condition for the words (e.g., /word1|word2|.../i)
-    # This ensures that if ANY of the main words are in the filename, it's considered for fuzzy ranking.
-    regex_pattern = re.compile("|".join(words), re.IGNORECASE)
+    # Create an AND condition using positive lookaheads.
+    # This ensures that ALL words must be in the filename to be considered for fuzzy ranking.
+    regex_pattern = re.compile("".join([f"(?=.*{word})" for word in words]), re.IGNORECASE)
     query_filter = {"file_name": {"$regex": regex_pattern}}
 
     preliminary_results = []
