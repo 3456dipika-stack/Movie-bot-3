@@ -2271,57 +2271,57 @@ async def main_async():
 
 
     # Command Handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("info", info_command))
-    app.add_handler(CommandHandler("rand", rand_command))
-    app.add_handler(CommandHandler("refer", refer_command))
-    app.add_handler(CommandHandler("request", request_command))
-    app.add_handler(CommandHandler("log", log_command))
-    app.add_handler(CommandHandler("total_users", total_users_command))
-    app.add_handler(CommandHandler("total_files", total_files_command))
-    app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(CommandHandler("deletefile", delete_file_command))
-    app.add_handler(CommandHandler("findfile", find_file_command))
-    app.add_handler(CommandHandler("deleteall", delete_all_command))
-    app.add_handler(CommandHandler("ban", ban_user_command))
-    app.add_handler(CommandHandler("unban", unban_user_command))
-    app.add_handler(CommandHandler("broadcast", broadcast_message))
-    app.add_handler(CommandHandler("grp_broadcast", grp_broadcast_command))
+    ptb_app.add_handler(CommandHandler("start", start))
+    ptb_app.add_handler(CommandHandler("help", help_command))
+    ptb_app.add_handler(CommandHandler("info", info_command))
+    ptb_app.add_handler(CommandHandler("rand", rand_command))
+    ptb_app.add_handler(CommandHandler("refer", refer_command))
+    ptb_app.add_handler(CommandHandler("request", request_command))
+    ptb_app.add_handler(CommandHandler("log", log_command))
+    ptb_app.add_handler(CommandHandler("total_users", total_users_command))
+    ptb_app.add_handler(CommandHandler("total_files", total_files_command))
+    ptb_app.add_handler(CommandHandler("stats", stats_command))
+    ptb_app.add_handler(CommandHandler("deletefile", delete_file_command))
+    ptb_app.add_handler(CommandHandler("findfile", find_file_command))
+    ptb_app.add_handler(CommandHandler("deleteall", delete_all_command))
+    ptb_app.add_handler(CommandHandler("ban", ban_user_command))
+    ptb_app.add_handler(CommandHandler("unban", unban_user_command))
+    ptb_app.add_handler(CommandHandler("broadcast", broadcast_message))
+    ptb_app.add_handler(CommandHandler("grp_broadcast", grp_broadcast_command))
     ptb_app.add_handler(CommandHandler("restart", restart_command))
-    app.add_handler(CommandHandler("index_channel", index_channel_command))
-    app.add_handler(CommandHandler("addlinkshort", addlinkshort_command))
-    app.add_handler(CommandHandler("pm_on", pm_on_command))
-    app.add_handler(CommandHandler("pm_off", pm_off_command))
+    ptb_app.add_handler(CommandHandler("index_channel", index_channel_command))
+    ptb_app.add_handler(CommandHandler("addlinkshort", addlinkshort_command))
+    ptb_app.add_handler(CommandHandler("pm_on", pm_on_command))
+    ptb_app.add_handler(CommandHandler("pm_off", pm_off_command))
 
     # File and Message Handlers
     # Admin file upload via PM
-    app.add_handler(MessageHandler(
+    ptb_app.add_handler(MessageHandler(
         (filters.Document.ALL | filters.VIDEO | filters.AUDIO) & filters.ChatType.PRIVATE,
         save_file_from_pm
     ))
 
     # Admin file indexing via DB Channel
-    app.add_handler(MessageHandler(
+    ptb_app.add_handler(MessageHandler(
         (filters.Document.ALL | filters.VIDEO | filters.AUDIO) & filters.Chat(chat_id=DB_CHANNEL),
         save_file_from_channel
     ))
 
     # Text Search Handler (REVISED LOGIC)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_files))
+    ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_files))
 
     # Callback Query Handler (for buttons)
-    app.add_handler(CallbackQueryHandler(button_handler))
+    ptb_app.add_handler(CallbackQueryHandler(button_handler))
 
     # Group tracking handler
-    app.add_handler(ChatMemberHandler(on_chat_member_update))
+    ptb_app.add_handler(ChatMemberHandler(on_chat_member_update))
 
     logger.info("Bot starting...")
 
     # Initialize and start the application
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling(poll_interval=1, timeout=10, drop_pending_updates=True)
+    await ptb_app.initialize()
+    await ptb_app.start()
+    await ptb_app.updater.start_polling(poll_interval=1, timeout=10, drop_pending_updates=True)
 
     # Keep the bot running indefinitely until a signal is received
     logger.info("Bot is running. Press Ctrl-C to stop.")
