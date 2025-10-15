@@ -74,7 +74,6 @@ HELP_TEXT = (
     "• `/unban <user_id>` - Unban a user.\n"
     "• `/broadcast <msg>` - Send a message to all users.\n"
     "• `/grp_broadcast <msg>` - Send a message to all connected groups where the bot is an admin.\n"
-    "• `/restart` - Restart the bot.\n"
         "• `/index_channel <channel_id> [skip]` - Index files from a channel.\n"
         "• `/addlinkshort <api_url> <api_key>` - Set the link shortener details.\n"
     "• Send a file to me in a private message to index it."
@@ -1351,18 +1350,6 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_and_delete_message(context, update.effective_chat.id, f"✅ Broadcast complete!\n\nSent to: {sent_count}\nFailed: {failed_count}")
 
 
-async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to restart the bot."""
-    asyncio.create_task(react_to_message_task(update))
-    if update.effective_user.id not in ADMINS:
-        await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
-        return
-
-    await send_and_delete_message(context, update.effective_chat.id, "Restarting bot...")
-    # Using os.execl to restart the bot. This will replace the current process.
-    os.execl(sys.executable, sys.executable, *sys.argv, "--restarted")
-
-
 async def grp_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to broadcast a message to all connected groups where the bot is an admin."""
     asyncio.create_task(react_to_message_task(update))
@@ -2273,7 +2260,6 @@ async def main_async():
     app.add_handler(CommandHandler("unban", unban_user_command))
     app.add_handler(CommandHandler("broadcast", broadcast_message))
     app.add_handler(CommandHandler("grp_broadcast", grp_broadcast_command))
-    app.add_handler(CommandHandler("restart", restart_command))
     app.add_handler(CommandHandler("index_channel", index_channel_command))
     app.add_handler(CommandHandler("addlinkshort", addlinkshort_command))
     app.add_handler(CommandHandler("pm_on", pm_on_command))
@@ -2310,21 +2296,6 @@ async def main_async():
 
     # Keep the bot running indefinitely until a signal is received
     logger.info("Bot is running. Press Ctrl-C to stop.")
-
-    # Broadcast restart message if the bot was restarted via the command
-    if "--restarted" in sys.argv:
-        logger.info("Bot was restarted, sending notification to all users.")
-        if users_col is not None:
-            users_cursor = users_col.find({}, {"_id": 1})
-            user_ids = [user["_id"] for user in users_cursor]
-            for user_id in user_ids:
-                try:
-                    await app.bot.send_message(chat_id=user_id, text="Bot has been restarted.")
-                    await asyncio.sleep(0.1)  # Avoid rate limiting
-                except Exception as e:
-                    logger.warning(f"Could not send restart message to user {user_id}: {e}")
-            logger.info("Finished sending restart notifications.")
-
     await asyncio.Future()  # This will run forever
 
 
