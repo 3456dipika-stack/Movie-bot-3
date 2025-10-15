@@ -32,6 +32,7 @@ from threading import Thread
 import os
 import sys
 from functools import lru_cache
+from werkzeug.serving import make_server
 
 # ========================
 # CONFIG
@@ -1350,6 +1351,23 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_and_delete_message(context, update.effective_chat.id, f"✅ Broadcast complete!\n\nSent to: {sent_count}\nFailed: {failed_count}")
 
 
+async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to restart the bot."""
+    asyncio.create_task(react_to_message_task(update))
+    if update.effective_user.id not in ADMINS:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
+        return
+
+    await send_and_delete_message(context, update.effective_chat.id, "Restarting bot...")
+
+    # Shut down the web server gracefully
+    if "server" in context.bot_data:
+        context.bot_data["server"].shutdown()
+
+    # Using os.execl to restart the bot. This will replace the current process.
+    os.execl(sys.executable, sys.executable, *sys.argv, "--restarted")
+
+
 async def grp_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to broadcast a message to all connected groups where the bot is an admin."""
     asyncio.create_task(react_to_message_task(update))
@@ -2174,10 +2192,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN
 # ========================
 
-def run_web_server():
-    """Runs the Flask web server to respond to Render's health checks."""
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+class ServerThread(Thread):
+    def __init__(self, app):
+        Thread.__init__(self)
+        port = int(os.environ.get("PORT", 10000))
+        self.srv = make_server('0.0.0.0', port, app)
+        self.ctx = app.app_context()
+        self.ctx.push()
+
+    def run(self):
+        logger.info('starting server')
+        self.srv.serve_forever()
+
+    def shutdown(self):
+        self.srv.shutdown()
 
 async def main_async():
     """The main asynchronous entry point for the bot."""
@@ -2185,14 +2213,14 @@ async def main_async():
         logger.critical("Failed to connect to the initial MongoDB URI. Exiting.")
         return
 
-    # Start the Flask web server in a background thread
-    web_server_thread = Thread(target=run_web_server)
-    web_server_thread.daemon = True
-    web_server_thread.start()
-    logger.info("Web server started in a background thread.")
-
     # Create the application instance
-    app = Application.builder().token(BOT_TOKEN).build()
+    ptb_app = Application.builder().token(BOT_TOKEN).build()
+
+    # Start the Flask web server in a background thread
+    server = ServerThread(app)
+    server.start()
+    logger.info("Web server started in a background thread.")
+    ptb_app.bot_data["server"] = server
 
     # Create TTL index for pending verifications (48-hour expiry - 48*60*60 = 172800)
     for uri in VERIFICATION_DB_URIS:
@@ -2260,6 +2288,7 @@ async def main_async():
     app.add_handler(CommandHandler("unban", unban_user_command))
     app.add_handler(CommandHandler("broadcast", broadcast_message))
     app.add_handler(CommandHandler("grp_broadcast", grp_broadcast_command))
+    ptb_app.add_handler(CommandHandler("restart", restart_command))
     app.add_handler(CommandHandler("index_channel", index_channel_command))
     app.add_handler(CommandHandler("addlinkshort", addlinkshort_command))
     app.add_handler(CommandHandler("pm_on", pm_on_command))
@@ -2296,6 +2325,21 @@ async def main_async():
 
     # Keep the bot running indefinitely until a signal is received
     logger.info("Bot is running. Press Ctrl-C to stop.")
+
+    # Broadcast restart message if the bot was restarted via the command
+    if "--restarted" in sys.argv:
+        logger.info("Bot was restarted, sending notification to all users.")
+        if users_col is not None:
+            users_cursor = users_col.find({}, {"_id": 1})
+            user_ids = [user["_id"] for user in users_cursor]
+            for user_id in user_ids:
+                try:
+                    await ptb_app.bot.send_message(chat_id=user_id, text="Bot has been restarted.")
+                    await asyncio.sleep(0.1)  # Avoid rate limiting
+                except Exception as e:
+                    logger.warning(f"Could not send restart message to user {user_id}: {e}")
+            logger.info("Finished sending restart notifications.")
+
     await asyncio.Future()  # This will run forever
 
 
