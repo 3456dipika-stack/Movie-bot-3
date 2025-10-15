@@ -32,6 +32,7 @@ from threading import Thread
 import os
 import sys
 from functools import lru_cache
+from werkzeug.serving import make_server
 
 # ========================
 # CONFIG
@@ -1847,9 +1848,9 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_delete_message(context, update.effective_chat.id, "❌ Query too short or invalid. Please try a longer search term.")
         return
 
-    # Create an AND condition using positive lookaheads.
-    # This ensures that ALL words must be in the filename to be considered for fuzzy ranking.
-    regex_pattern = re.compile("".join([f"(?=.*{word})" for word in words]), re.IGNORECASE)
+    # Create an OR condition for the words (e.g., /word1|word2|.../i)
+    # This ensures that if ANY of the main words are in the filename, it's considered for fuzzy ranking.
+    regex_pattern = re.compile("|".join(words), re.IGNORECASE)
     query_filter = {"file_name": {"$regex": regex_pattern}}
 
     preliminary_results = []
@@ -2192,8 +2193,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN
 # ========================
 
-from werkzeug.serving import make_server
-
 class ServerThread(Thread):
     def __init__(self, app):
         Thread.__init__(self)
@@ -2216,13 +2215,13 @@ async def main_async():
         return
 
     # Create the application instance
-    app = Application.builder().token(BOT_TOKEN).build()
+    ptb_app = Application.builder().token(BOT_TOKEN).build()
 
     # Start the Flask web server in a background thread
     server = ServerThread(app)
     server.start()
     logger.info("Web server started in a background thread.")
-    app.bot_data["server"] = server
+    ptb_app.bot_data["server"] = server
 
     # Create TTL index for pending verifications (48-hour expiry - 48*60*60 = 172800)
     for uri in VERIFICATION_DB_URIS:
@@ -2273,57 +2272,57 @@ async def main_async():
 
 
     # Command Handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("info", info_command))
-    app.add_handler(CommandHandler("rand", rand_command))
-    app.add_handler(CommandHandler("refer", refer_command))
-    app.add_handler(CommandHandler("request", request_command))
-    app.add_handler(CommandHandler("log", log_command))
-    app.add_handler(CommandHandler("total_users", total_users_command))
-    app.add_handler(CommandHandler("total_files", total_files_command))
-    app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(CommandHandler("deletefile", delete_file_command))
-    app.add_handler(CommandHandler("findfile", find_file_command))
-    app.add_handler(CommandHandler("deleteall", delete_all_command))
-    app.add_handler(CommandHandler("ban", ban_user_command))
-    app.add_handler(CommandHandler("unban", unban_user_command))
-    app.add_handler(CommandHandler("broadcast", broadcast_message))
-    app.add_handler(CommandHandler("grp_broadcast", grp_broadcast_command))
-    app.add_handler(CommandHandler("restart", restart_command))
-    app.add_handler(CommandHandler("index_channel", index_channel_command))
-    app.add_handler(CommandHandler("addlinkshort", addlinkshort_command))
-    app.add_handler(CommandHandler("pm_on", pm_on_command))
-    app.add_handler(CommandHandler("pm_off", pm_off_command))
+    ptb_app.add_handler(CommandHandler("start", start))
+    ptb_app.add_handler(CommandHandler("help", help_command))
+    ptb_app.add_handler(CommandHandler("info", info_command))
+    ptb_app.add_handler(CommandHandler("rand", rand_command))
+    ptb_app.add_handler(CommandHandler("refer", refer_command))
+    ptb_app.add_handler(CommandHandler("request", request_command))
+    ptb_app.add_handler(CommandHandler("log", log_command))
+    ptb_app.add_handler(CommandHandler("total_users", total_users_command))
+    ptb_app.add_handler(CommandHandler("total_files", total_files_command))
+    ptb_app.add_handler(CommandHandler("stats", stats_command))
+    ptb_app.add_handler(CommandHandler("deletefile", delete_file_command))
+    ptb_app.add_handler(CommandHandler("findfile", find_file_command))
+    ptb_app.add_handler(CommandHandler("deleteall", delete_all_command))
+    ptb_app.add_handler(CommandHandler("ban", ban_user_command))
+    ptb_app.add_handler(CommandHandler("unban", unban_user_command))
+    ptb_app.add_handler(CommandHandler("broadcast", broadcast_message))
+    ptb_app.add_handler(CommandHandler("grp_broadcast", grp_broadcast_command))
+    ptb_app.add_handler(CommandHandler("restart", restart_command))
+    ptb_app.add_handler(CommandHandler("index_channel", index_channel_command))
+    ptb_app.add_handler(CommandHandler("addlinkshort", addlinkshort_command))
+    ptb_app.add_handler(CommandHandler("pm_on", pm_on_command))
+    ptb_app.add_handler(CommandHandler("pm_off", pm_off_command))
 
     # File and Message Handlers
     # Admin file upload via PM
-    app.add_handler(MessageHandler(
+    ptb_app.add_handler(MessageHandler(
         (filters.Document.ALL | filters.VIDEO | filters.AUDIO) & filters.ChatType.PRIVATE,
         save_file_from_pm
     ))
 
     # Admin file indexing via DB Channel
-    app.add_handler(MessageHandler(
+    ptb_app.add_handler(MessageHandler(
         (filters.Document.ALL | filters.VIDEO | filters.AUDIO) & filters.Chat(chat_id=DB_CHANNEL),
         save_file_from_channel
     ))
 
     # Text Search Handler (REVISED LOGIC)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_files))
+    ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_files))
 
     # Callback Query Handler (for buttons)
-    app.add_handler(CallbackQueryHandler(button_handler))
+    ptb_app.add_handler(CallbackQueryHandler(button_handler))
 
     # Group tracking handler
-    app.add_handler(ChatMemberHandler(on_chat_member_update))
+    ptb_app.add_handler(ChatMemberHandler(on_chat_member_update))
 
     logger.info("Bot starting...")
 
     # Initialize and start the application
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling(poll_interval=1, timeout=10, drop_pending_updates=True)
+    await ptb_app.initialize()
+    await ptb_app.start()
+    await ptb_app.updater.start_polling(poll_interval=1, timeout=10, drop_pending_updates=True)
 
     # Keep the bot running indefinitely until a signal is received
     logger.info("Bot is running. Press Ctrl-C to stop.")
@@ -2336,7 +2335,7 @@ async def main_async():
             user_ids = [user["_id"] for user in users_cursor]
             for user_id in user_ids:
                 try:
-                    await app.bot.send_message(chat_id=user_id, text="Bot has been restarted.")
+                    await ptb_app.bot.send_message(chat_id=user_id, text="Bot has been restarted.")
                     await asyncio.sleep(0.1)  # Avoid rate limiting
                 except Exception as e:
                     logger.warning(f"Could not send restart message to user {user_id}: {e}")
