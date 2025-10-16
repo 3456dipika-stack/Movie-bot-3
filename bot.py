@@ -60,9 +60,10 @@ HELP_TEXT = (
     "• `/start` - Start the bot.\n"
     "• `/help` - Show this help message.\n"
     "• `/info` - Get bot information.\n"
-    "• `/refer` - Get your referral link to earn premium access.\n"
-    "• `/request <name>` - Request a file.\n"
-    "• Send any text to search for a file (admins only in private chat).\n\n"
+    "• `/refer` - Get your referral link to earn premium access (ad-free file access).\n"
+    "• `/request <name>` - Request a specific file.\n"
+    "• `/request_index <channel_link>` - Request for a channel to be indexed.\n"
+    "• Send any text to search for a file.\n\n"
     "**Admin Commands:**\n"
     "• `/log` - Show recent error logs.\n"
     "• `/total_users` - Get the total number of users.\n"
@@ -76,8 +77,8 @@ HELP_TEXT = (
     "• `/freeforall` - Grant 12-hour premium access to all users.\n"
     "• `/broadcast <msg>` - Send a message to all users.\n"
     "• `/grp_broadcast <msg>` - Send a message to all connected groups where the bot is an admin.\n"
-        "• `/index_channel <channel_id> [skip]` - Index files from a channel.\n"
-        "• `/addlinkshort <api_url> <api_key>` - Set the link shortener details.\n"
+    "• `/index <channel_id> [skip]` - Index files from a channel.\n"
+    "• `/pm_on` / `/pm_off` - Enable/disable private message search for non-admins.\n"
     "• Send a file to me in a private message to index it."
 )
 
@@ -87,8 +88,7 @@ MONGO_URIS = [
     "mongodb+srv://28c2kqa_db_user:IL51mem7W6g37mA5@cluster0.np0ffl0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
 ]
 GROUPS_DB_URIS = ["mongodb+srv://6p5e2y8_db_user:MxRFLhQ534AI3rfQ@cluster0.j9hcylx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
-VERIFICATION_DB_URIS = ["mongodb+srv://7eqsiq8_db_user:h6nYmRKbgHJDALUA@cluster0.wuntcv8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
-VERIFIED_USERS_DB_URIS = ["mongodb+srv://q9amkpx_db_user:xuLc5qUJAJMBCtDH@cluster0.mvwgcxd.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
+PROMO_LINKS_DB_URI = "mongodb+srv://promo_user:your_promo_password@cluster0.promo.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0" # New DB for promo links
 REFERRAL_DB_URI = "mongodb+srv://qy8gjiw_db_user:JjryWhQV4CYtzcYo@cluster0.lkkvli8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 current_uri_index = 0
 
@@ -103,10 +103,10 @@ banned_users_col = None
 groups_col = None
 referrals_col = None
 referred_users_col = None
+promo_links_col = None # New collection for promo links
 
 
 # In-memory caches for performance
-verified_user_cache = {}  # {user_id: expiry_timestamp}
 banned_user_cache = {}    # {user_id: bool}
 
 
@@ -258,187 +258,30 @@ async def bot_can_respond(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     return False
 
-async def is_user_verified(user_id: int):
-    """
-    Checks if a user is verified, either through premium status or standard 24-hour verification.
-    Caches the result for performance.
-    """
-    # 1. Check cache first
-    if user_id in verified_user_cache:
-        if time.time() < verified_user_cache[user_id]:
-            return True
-        else:
-            del verified_user_cache[user_id]
+async def get_random_promo_link():
+    """Fetches a random promotional link from the database."""
+    if promo_links_col is not None:
+        try:
+            pipeline = [{"$sample": {"size": 1}}]
+            result = list(promo_links_col.aggregate(pipeline))
+            if result:
+                return result[0]
+        except Exception as e:
+            logger.error(f"Failed to fetch random promo link: {e}")
+    return None
 
-    # 2. Check for Premium Status (from referrals)
+async def is_user_premium(user_id: int):
+    """Checks if a user has an active premium subscription via the referral system."""
     if referrals_col is not None:
         try:
             user_referral_data = referrals_col.find_one({"_id": user_id})
+            # The TTL index handles expiry, so just checking for existence is enough.
             if user_referral_data and "premium_until" in user_referral_data:
-                # The TTL index will automatically remove expired documents, so if it exists, it's valid.
-                expiry_time = time.time() + (30 * 24 * 60 * 60) # Cache for 30 days
-                verified_user_cache[user_id] = expiry_time
-                logger.info(f"User {user_id} has premium access. Cached.")
+                logger.info(f"User {user_id} has premium access.")
                 return True
         except Exception as e:
             logger.error(f"Failed to check premium status for user {user_id}: {e}")
-
-    # 3. If not premium, check standard 24-hour verification
-    for uri in VERIFIED_USERS_DB_URIS:
-        client = mongo_clients.get(uri)
-        if not client:
-            continue
-        try:
-            db = client["verified_users_db"]
-            collection = db["verified_users"]
-            user_doc = collection.find_one({"_id": user_id})
-            if user_doc:
-                # Store result in cache with a 24-hour expiry
-                expiry_time = time.time() + (24 * 60 * 60)
-                verified_user_cache[user_id] = expiry_time
-                logger.info(f"User {user_id} is verified (24hr access). Cached.")
-                return True # Found in one DB, that's enough
-        except Exception as e:
-            logger.error(f"Failed to check verification status for user {user_id} at ...{uri[-20:]}: {e}")
-            continue
-
-    logger.info(f"User {user_id} is not verified.")
     return False
-
-async def mark_user_as_verified(user_id: int):
-    """Adds a user to the verified list using the connection pool and updates the cache."""
-    success_count = 0
-    for uri in VERIFIED_USERS_DB_URIS:
-        client = mongo_clients.get(uri)
-        if not client:
-            continue
-        try:
-            db = client["verified_users_db"]
-            collection = db["verified_users"]
-            # The TTL index will handle the 24-hour expiry based on 'verifiedAt'
-            collection.update_one(
-                {"_id": user_id},
-                {"$set": {"verifiedAt": datetime.datetime.utcnow()}},
-                upsert=True
-            )
-            success_count += 1
-        except Exception as e:
-            logger.error(f"Failed to mark user {user_id} as verified at ...{uri[-20:]}: {e}")
-            continue
-
-    if success_count > 0:
-        # Update cache on success
-        expiry_time = time.time() + (24 * 60 * 60)
-        verified_user_cache[user_id] = expiry_time
-        logger.info(f"Marked user {user_id} as verified for 24 hours in {success_count}/{len(VERIFIED_USERS_DB_URIS)} DBs. Cache updated.")
-        return True
-    else:
-        logger.error(f"Failed to mark user {user_id} as verified in any DB.")
-        return False
-
-async def get_shortener_config():
-    """Fetches the shortener config from the dedicated database using the connection pool."""
-    for uri in VERIFICATION_DB_URIS:
-        client = mongo_clients.get(uri)
-        if not client:
-            continue
-        try:
-            db = client["verification_db"]
-            config_col = db["config"]
-            config = config_col.find_one({"_id": "shortener_config"})
-            if config:
-                return config  # Return on first success
-        except Exception as e:
-            logger.error(f"Failed to get shortener config from ...{uri[-20:]}: {e}")
-            continue  # Try next URI
-    logger.error("All shortener DB URIs failed.")
-    return None
-
-async def get_shortened_link(url_to_shorten: str):
-    """Generates a shortened link using the configured API."""
-    config = await get_shortener_config()
-    if not config or 'api_url' not in config or 'api_key' not in config:
-        logger.error("Shortener API is not configured.")
-        return "Error: Shortener not configured."
-
-    api_url = config['api_url']
-    api_key = config['api_key']
-
-    # The API endpoint usually has the API key and the URL as parameters
-    full_api_url = f"{api_url}?api={api_key}&url={url_to_shorten}"
-
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(full_api_url)
-            response.raise_for_status()
-            # The response is JSON, so we parse it and extract the URL.
-            data = response.json()
-            if data.get("status") == "success" and data.get("shortenedUrl"):
-                return data["shortenedUrl"]
-            else:
-                logger.error(f"Shortener API returned an unexpected response: {response.text}")
-                return "Error: Invalid response from shortener API."
-    except httpx.RequestError as e:
-        logger.error(f"Failed to get shortened link: {e}")
-        return f"Error: Could not shorten link. {e}"
-    except Exception as e:
-        logger.error(f"Failed to decode or process response from shortener API: {e}")
-        return "Error: Could not parse response from shortener API."
-
-async def save_verification_progress(verification_data):
-    """Saves or updates a user's verification progress using the connection pool."""
-    verification_data['createdAt'] = datetime.datetime.utcnow() # Reset timer on each step
-
-    success_count = 0
-    for uri in VERIFICATION_DB_URIS:
-        client = mongo_clients.get(uri)
-        if not client:
-            continue
-        try:
-            db = client["verification_db"]
-            collection = db["pending_verifications"]
-            collection.update_one(
-                {"_id": verification_data["_id"]},
-                {"$set": verification_data},
-                upsert=True
-            )
-            success_count += 1
-        except Exception as e:
-            logger.error(f"Failed to save verification progress to ...{uri[-20:]}: {e}")
-            continue
-
-    return success_count > 0
-
-async def get_verification_progress(verification_id: str):
-    """Fetches a user's verification progress using the connection pool."""
-    for uri in VERIFICATION_DB_URIS:
-        client = mongo_clients.get(uri)
-        if not client:
-            continue
-        try:
-            db = client["verification_db"]
-            collection = db["pending_verifications"]
-            progress = collection.find_one({"_id": verification_id})
-            if progress:
-                return progress
-        except Exception as e:
-            logger.error(f"Failed to get verification progress from ...{uri[-20:]}: {e}")
-            continue
-    return None
-
-async def delete_verification_progress(verification_id: str):
-    """Deletes a verification record from all DBs using the connection pool."""
-    for uri in VERIFICATION_DB_URIS:
-        client = mongo_clients.get(uri)
-        if not client:
-            continue
-        try:
-            db = client["verification_db"]
-            collection = db["pending_verifications"]
-            collection.delete_one({"_id": verification_id})
-        except Exception as e:
-            logger.error(f"Failed to delete verification progress from ...{uri[-20:]}: {e}")
-            continue
 
 
 async def send_and_delete_message(
@@ -489,12 +332,14 @@ def connect_to_mongo():
     Initializes connection pools for all database URIs specified in the config.
     It also sets the initial active database connection.
     """
-    global mongo_clients, db, files_col, users_col, banned_users_col, groups_col, referrals_col, referred_users_col, current_uri_index
+    global mongo_clients, db, files_col, users_col, banned_users_col, groups_col, referrals_col, referred_users_col, promo_links_col, current_uri_index
 
     # Consolidate all unique URIs
-    all_uris = set(MONGO_URIS + GROUPS_DB_URIS + VERIFICATION_DB_URIS + VERIFIED_USERS_DB_URIS)
+    all_uris = set(MONGO_URIS + GROUPS_DB_URIS)
     if REFERRAL_DB_URI:
         all_uris.add(REFERRAL_DB_URI)
+    if PROMO_LINKS_DB_URI:
+        all_uris.add(PROMO_LINKS_DB_URI)
 
     for uri in all_uris:
         try:
@@ -531,6 +376,18 @@ def connect_to_mongo():
                 logger.critical("Failed to connect to the Referral MongoDB URI. Referral system will not function.")
         else:
             logger.warning("REFERRAL_DB_URI not set. Referral system will be disabled.")
+
+        # Connect to the promotional links database
+        if PROMO_LINKS_DB_URI:
+            promo_client = mongo_clients.get(PROMO_LINKS_DB_URI)
+            if promo_client:
+                promo_db = promo_client["promo_db"]
+                promo_links_col = promo_db["links"]
+                logger.info("Successfully connected to Promotional Links MongoDB.")
+            else:
+                logger.critical("Failed to connect to the Promotional Links MongoDB URI. The new verification system will not function.")
+        else:
+            logger.warning("PROMO_LINKS_DB_URI not set. The new verification system will be disabled.")
 
         logger.info(f"Successfully connected to initial MongoDB at index {current_uri_index}.")
         return True
@@ -638,98 +495,6 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
 # COMMAND HANDLERS
 # ========================
 
-async def handle_verification_step(update: Update, context: ContextTypes.DEFAULT_TYPE, verification_id: str):
-    """Handles a user clicking a verification deep link."""
-    user = update.effective_user
-    progress = await get_verification_progress(verification_id)
-
-    if not progress:
-        await send_and_delete_message(context, user.id, "❌ This verification link is invalid or has expired. Please start over by requesting a file again.")
-        return
-
-    if progress.get("user_id") != user.id:
-        await send_and_delete_message(context, user.id, "❌ This verification link is not for you.")
-        return
-
-    current_step = progress.get("step", 1)
-    next_step = current_step + 1
-
-    if next_step <= 3:
-        # Continue to the next step
-        progress['step'] = next_step
-        if await save_verification_progress(progress):
-            bot_username = context.bot.username
-            deep_link = f"https://t.me/{bot_username}?start={verification_id}"
-            shortened_link = await get_shortened_link(deep_link)
-
-            if "Error:" in shortened_link:
-                await send_and_delete_message(context, user.id, shortened_link)
-            else:
-                await send_and_delete_message(
-                    context,
-                    user.id,
-                    f"✅ Step {current_step} complete!\n\n"
-                    f"Step {next_step} of 3: Please open this link to continue:\n{shortened_link}"
-                )
-        else:
-            await send_and_delete_message(context, user.id, "❌ Could not save your verification progress. Please try again.")
-
-    else:
-        # Verification complete
-        await send_and_delete_message(context, user.id, "✅ Verification successful! You now have access for 24 hours. Sending your requested file(s)...")
-        await mark_user_as_verified(user.id)
-
-        # Deliver the originally requested file(s)
-        original_request = progress.get("original_request")
-        if original_request:
-            # The source chat for a verification-completed action is always the user's private chat.
-            source_chat_id = user.id
-
-            if original_request.get("type") == "single":
-                file_id = original_request.get("file_id")
-                file_data = None
-                for uri in MONGO_URIS:
-                    client = mongo_clients.get(uri)
-                    if not client:
-                        continue
-                    try:
-                        db = client["telegram_files"]
-                        file_data = db["files"].find_one({"_id": ObjectId(file_id)})
-                        if file_data: break
-                    except Exception: continue
-
-                if file_data:
-                    asyncio.create_task(send_file_task(user.id, source_chat_id, context, file_data, user.mention_html()))
-                else:
-                    await send_and_delete_message(context, user.id, "❌ The originally requested file could not be found.")
-
-            elif original_request.get("type") == "batch":
-                file_ids = [ObjectId(fid) for fid in original_request.get("file_ids", [])]
-                files_to_send = []
-                for uri in MONGO_URIS:
-                    client = mongo_clients.get(uri)
-                    if not client:
-                        continue
-                    try:
-                        db = client["telegram_files"]
-                        files_to_send.extend(list(db["files"].find({"_id": {"$in": file_ids}})))
-                    except Exception: continue
-
-                if files_to_send:
-                    asyncio.create_task(send_all_files_task(user.id, source_chat_id, context, files_to_send, user.mention_html()))
-                else:
-                    await send_and_delete_message(context, user.id, "❌ The originally requested files could not be found.")
-
-            elif original_request.get("type") == "random":
-                file_data = await get_random_file_from_db()
-                if file_data:
-                    asyncio.create_task(send_file_task(user.id, source_chat_id, context, file_data, user.mention_html()))
-                else:
-                    await send_and_delete_message(context, user.id, "❌ Could not find a random file after verification. The database might be empty.")
-
-        # Clean up the verification progress from the database
-        await delete_verification_progress(verification_id)
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /start command, including verification and referral deep links."""
     asyncio.create_task(react_to_message_task(update))
@@ -788,12 +553,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Could not parse referral link payload: {payload} - {e}")
             # The new user will fall through to the standard welcome message.
 
-        # 2. Verification Link Handling
-        elif not payload.startswith("ref_"):
-            # This must be a verification link, pass it to the handler
-            await handle_verification_step(update, context, payload)
-            await save_user_info(user)  # Save user info after they attempt verification
-            return  # Stop further execution of the start command
+        # 2. Verification Link Handling (REMOVED)
+        # This section is removed as the new system does not use verification deep links.
+        pass
 
     # Save user info now. If they were referred, they are now marked as "existing".
     await save_user_info(user)
@@ -885,9 +647,9 @@ async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
-    is_verified = await is_user_verified(user_id)
+    is_premium = await is_user_premium(user_id)
 
-    if user_id in ADMINS or is_verified:
+    if user_id in ADMINS or is_premium:
         await send_and_delete_message(context, update.effective_chat.id, "⏳ Fetching a random file for you...")
 
         file_data = await get_random_file_from_db()
@@ -897,9 +659,22 @@ async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await send_and_delete_message(context, update.effective_chat.id, "❌ Could not find a random file. The database might be empty.")
     else:
-        # Start verification process
-        original_request = {"type": "random"}
-        await start_verification_process(context, user_id, update.effective_user.mention_html(), update.effective_chat.id, original_request)
+        # Start the new "join for reward" flow
+        promo_link_data = await get_random_promo_link()
+        if promo_link_data:
+            file_id = str(file_data['_id']) if file_data else 'random'
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"Join {promo_link_data['channel_name']} to get your file!", url=promo_link_data['channel_link'])],
+                [InlineKeyboardButton("I have Joined! ✅", callback_data=f"join_{file_id}_{promo_link_data['channel_id']}")]
+            ])
+            await send_and_delete_message(
+                context,
+                update.effective_chat.id,
+                "🎁 **Join our channel to get your reward!**\n\nClick the button below to join the channel, then click 'I have Joined!' to receive your file.",
+                reply_markup=keyboard
+            )
+        else:
+            await send_and_delete_message(context, update.effective_chat.id, "❌ Could not find a promotional channel. Please contact an admin.")
 
 
 async def refer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1469,7 +1244,61 @@ async def grp_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TY
     await send_and_delete_message(context, update.effective_chat.id, f"✅ Group broadcast complete!\n\nSent to: {sent_count} groups\nFailed: {failed_count} groups")
 
 
-async def index_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def request_index_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Allows any user to request a channel to be indexed."""
+    asyncio.create_task(react_to_message_task(update))
+    if not await bot_can_respond(update, context):
+        return
+    if await is_banned(update.effective_user.id):
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
+        return
+
+    user = update.effective_user
+    if not context.args:
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            "Please provide a channel link to request.\n\nUsage: `/request_index <channel_link>`",
+            parse_mode="Markdown"
+        )
+        return
+
+    request_text = " ".join(context.args)
+
+    # Format the message for the log channel
+    log_message = (
+        f"🙏 **New Index Request**\n\n"
+        f"**From User:** {user.mention_html()}\n"
+        f"**User ID:** `{user.id}`\n"
+        f"**Username:** @{user.username or 'N/A'}\n\n"
+        f"**Channel to Index:**\n`{request_text}`"
+    )
+
+    try:
+        # Forward the request to the log channel
+        await context.bot.send_message(
+            chat_id=LOG_CHANNEL,
+            text=log_message,
+            parse_mode="HTML"
+        )
+        # Confirm to the user
+        confirmation_text = f"✅ {user.mention_html()}, your request to index the channel has been sent to the admins."
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            confirmation_text,
+            parse_mode="HTML"
+        )
+    except TelegramError as e:
+        logger.error(f"Failed to process /request_index command: {e}")
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            "❌ Sorry, there was an error sending your request. Please try again later."
+        )
+
+
+async def index_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to index files from a given channel."""
     asyncio.create_task(react_to_message_task(update))
     if update.effective_user.id not in ADMINS:
@@ -1477,7 +1306,7 @@ async def index_channel_command(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if len(context.args) < 1:
-        await send_and_delete_message(context, update.effective_chat.id, "Usage: /index_channel <channel_id> [skip_messages]")
+        await send_and_delete_message(context, update.effective_chat.id, "Usage: /index <channel_id> [skip_messages]")
         return
 
     try:
@@ -1518,42 +1347,6 @@ async def pm_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     PM_SEARCH_ENABLED = False
     await send_and_delete_message(context, update.effective_chat.id, "✅ Private message search has been disabled for all users.")
-
-
-async def addlinkshort_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to set the link shortener API details on all verification DBs."""
-    asyncio.create_task(react_to_message_task(update))
-    if update.effective_user.id not in ADMINS:
-        await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
-        return
-
-    if len(context.args) != 2:
-        await send_and_delete_message(context, update.effective_chat.id, "Usage: /addlinkshort <api_url> <api_key>")
-        return
-
-    api_url = context.args[0]
-    api_key = context.args[1]
-
-    success_count = 0
-    for uri in VERIFICATION_DB_URIS:
-        client = mongo_clients.get(uri)
-        if not client:
-            continue
-        try:
-            temp_db = client["verification_db"]
-            config_col = temp_db["config"]
-
-            # Store the config as a single document
-            config_col.update_one(
-                {"_id": "shortener_config"},
-                {"$set": {"api_url": api_url, "api_key": api_key}},
-                upsert=True
-            )
-            success_count += 1
-        except Exception as e:
-            logger.error(f"Failed to save shortener config to ...{uri[-20:]}: {e}")
-
-    await send_and_delete_message(context, update.effective_chat.id, f"✅ Link shortener details saved to {success_count}/{len(VERIFICATION_DB_URIS)} databases.")
 
 
 async def index_channel_task(context: ContextTypes.DEFAULT_TYPE, channel_id: int, skip: int, user_chat_id: int):
@@ -2061,41 +1854,6 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
         logger.error(f"Error sending or editing search results page: {e}")
 
 
-async def start_verification_process(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_mention: str, source_chat_id: int, original_request: dict):
-    """
-    Starts the 3-step verification process for a user.
-    `original_request` should contain the file request details.
-    """
-    verification_id = str(uuid.uuid4())
-    progress_data = {
-        "_id": verification_id,
-        "user_id": user_id,
-        "step": 1,
-        "original_request": original_request
-    }
-
-    if await save_verification_progress(progress_data):
-        bot_username = context.bot.username
-        deep_link = f"https://t.me/{bot_username}?start={verification_id}"
-
-        shortened_link = await get_shortened_link(deep_link)
-
-        if "Error:" in shortened_link:
-            await send_and_delete_message(context, user_id, shortened_link)
-        else:
-            # Send the first link to the user's private chat
-            await send_and_delete_message(
-                context,
-                user_id,
-                f"Please complete the 3-step verification to get 24-hour access to all files.\n\n"
-                f"Step 1 of 3: Open this link to continue:\n{shortened_link}"
-            )
-            # Notify in group if the request came from a group
-            if source_chat_id != user_id:
-                 await send_and_delete_message(context, source_chat_id, f"✅ {user_mention}, At first you should start me in private chat. Then please complete the verification in my private chat to get your file.", parse_mode="HTML")
-    else:
-        await send_and_delete_message(context, user_id, "❌ Could not start the verification process. Please try again later.")
-
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button clicks with new verification flow."""
     asyncio.create_task(react_to_message_task(update))
@@ -2124,14 +1882,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- File Request Logic (get_ or sendall_) ---
     if data.startswith("get_") or data.startswith("sendall_"):
-        is_verified = await is_user_verified(user_id)
+        is_premium = await is_user_premium(user_id)
+        is_temp_premium = context.user_data.get('is_temp_premium', False)
 
-        # Admins and already verified users get files directly
-        if user_id in ADMINS or is_verified:
+        # Admins and premium users get files directly
+        if user_id in ADMINS or is_premium or is_temp_premium:
             if user_id in ADMINS:
                 await send_and_delete_message(context, query.message.chat.id, "⌛ Processing your request as an admin...")
             else:
-                 await send_and_delete_message(context, query.message.chat.id, "✅ You are already verified. Sending your file(s)...")
+                 await send_and_delete_message(context, query.message.chat.id, "✅ You have premium access. Sending your file(s)...")
 
             # --- Send Single File ---
             if data.startswith("get_"):
@@ -2147,7 +1906,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         file_data = temp_files_col.find_one({"_id": ObjectId(file_id_str)})
                         if file_data: break
                     except Exception as e:
-                        logger.error(f"DB Error while fetching file {file_id_str} for verified user: {e}")
+                        logger.error(f"DB Error while fetching file {file_id_str} for premium user: {e}")
 
                 if file_data:
                     asyncio.create_task(send_file_task(user_id, query.message.chat.id, context, file_data, query.from_user.mention_html()))
@@ -2170,27 +1929,65 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 asyncio.create_task(send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html()))
             return
 
-        # --- Start Verification for Non-Admin/Non-Verified Users ---
+        # --- Start "Join for Reward" flow for non-premium users ---
         else:
-            original_request = {}
-            if data.startswith("get_"):
-                file_id_str = data.split("_", 1)[1]
-                original_request = {"type": "single", "file_id": file_id_str}
-            elif data.startswith("sendall_"):
-                _, page_str, search_query = data.split("_", 2)
-                page = int(page_str)
-                final_results = context.user_data.get('search_results')
-                if not final_results:
-                    await send_and_delete_message(context, user_id, "❌ Search session expired. Please search again.")
-                    return
-                files_to_send = final_results[page * 10:(page + 1) * 10]
-                if not files_to_send:
-                    await send_and_delete_message(context, user_id, "❌ No files found on this page to send.")
-                    return
-                file_ids = [str(file['_id']) for file in files_to_send]
-                original_request = {"type": "batch", "file_ids": file_ids}
+            promo_link_data = await get_random_promo_link()
+            if promo_link_data:
+                # The 'data' variable already contains the file request (e.g., "get_...")
+                # We pass it directly to the 'join' callback
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton(f"Join {promo_link_data['channel_name']} to get your reward!", url=promo_link_data['channel_link'])],
+                    [InlineKeyboardButton("I have Joined! ✅", callback_data=f"join_{data}_{promo_link_data['channel_id']}")]
+                ])
+                await send_and_delete_message(
+                    context,
+                    query.message.chat.id,
+                    "🎁 **Join our channel to get your reward!**\n\nClick the button below to join the channel, then click 'I have Joined!' to receive your file.",
+                    reply_markup=keyboard
+                )
+            else:
+                await send_and_delete_message(context, query.message.chat.id, "❌ Could not find a promotional channel. Please contact an admin.")
+        return
 
-            await start_verification_process(context, user_id, query.from_user.mention_html(), query.message.chat.id, original_request)
+    # --- Join for Reward Logic ---
+    elif data.startswith("join_"):
+        _, original_callback_data, channel_id_str = data.split("_", 2)
+        channel_id = int(channel_id_str)
+
+        # Exempt specific channels from the check
+        if channel_id in [-1002692055617, -1002551875503, -1002839913869]: # @filestore4u, @freemovie5u, @code_boost
+            is_member = True
+        else:
+            try:
+                member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
+                is_member = member.status in ["member", "administrator", "creator"]
+            except TelegramError as e:
+                logger.error(f"Error checking member status for user {user_id} in channel {channel_id}: {e}")
+                is_member = False
+
+        if is_member:
+            await query.answer("✅ Thank you for joining! Sending your reward...", show_alert=True)
+
+            # Re-process the original file request
+            # We create a new "mock" query object to pass to the handler
+            class MockCallbackQuery:
+                def __init__(self, original_query, new_data):
+                    self.data = new_data
+                    self.from_user = original_query.from_user
+                    self.message = original_query.message
+                async def answer(self, *args, **kwargs):
+                    pass # We already answered
+
+            mock_query = MockCallbackQuery(query, original_callback_data)
+            mock_update = Update(update.update_id, mock_query)
+
+            # Setting the user as "premium" for this one-off request to bypass the check
+            context.user_data['is_temp_premium'] = True
+            await button_handler(mock_update, context)
+            del context.user_data['is_temp_premium'] # Clean up immediately
+
+        else:
+            await query.answer("❌ You haven't joined the channel yet. Please join to get your file.", show_alert=True)
         return
 
     # --- Other Button Logic (Pagination, Start Menu, etc.) ---
@@ -2262,40 +2059,6 @@ async def main_async():
     logger.info("Web server started in a background thread.")
     ptb_app.bot_data["server"] = server
 
-    # Create TTL index for pending verifications (48-hour expiry - 48*60*60 = 172800)
-    for uri in VERIFICATION_DB_URIS:
-        try:
-            client = mongo_clients.get(uri)
-            if client:
-                db = client["verification_db"]
-                collection = db["pending_verifications"]
-                collection.create_index("createdAt", expireAfterSeconds=172800) # 48 hours
-                logger.info(f"TTL index on 'pending_verifications' collection ensured for 48 hours at ...{uri[-20:]}")
-        except PyMongoError as e:
-            if e.code == 85: # IndexOptionsConflict
-                logger.warning(f"TTL index for 'pending_verifications' at ...{uri[-20:]} already exists with different options. Skipping.")
-            else:
-                logger.error(f"Could not create TTL index for pending verifications at ...{uri[-20:]}: {e}")
-        except Exception as e:
-            logger.error(f"An unexpected error occurred during TTL index creation for pending_verifications at ...{uri[-20:]}: {e}")
-
-    # Create TTL index for verified users (24-hour expiry - 24*60*60 = 86400)
-    for uri in VERIFIED_USERS_DB_URIS:
-        try:
-            client = mongo_clients.get(uri)
-            if client:
-                db = client["verified_users_db"]
-                collection = db["verified_users"]
-                collection.create_index("verifiedAt", expireAfterSeconds=86400) # 24 hours
-                logger.info(f"TTL index on 'verified_users' collection ensured for 24 hours at ...{uri[-20:]}")
-        except PyMongoError as e:
-            if e.code == 85: # IndexOptionsConflict
-                logger.warning(f"TTL index for 'verified_users' at ...{uri[-20:]} already exists with different options. Skipping.")
-            else:
-                logger.error(f"Could not create TTL index for verified_users at ...{uri[-20:]}: {e}")
-        except Exception as e:
-            logger.error(f"An unexpected error occurred during TTL index creation for verified_users at ...{uri[-20:]}: {e}")
-
     # Create TTL index for premium users (expires at the time specified in the 'premium_until' field)
     if referrals_col is not None:
         try:
@@ -2330,8 +2093,8 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("broadcast", broadcast_message))
     ptb_app.add_handler(CommandHandler("grp_broadcast", grp_broadcast_command))
     ptb_app.add_handler(CommandHandler("restart", restart_command))
-    ptb_app.add_handler(CommandHandler("index_channel", index_channel_command))
-    ptb_app.add_handler(CommandHandler("addlinkshort", addlinkshort_command))
+    ptb_app.add_handler(CommandHandler("index", index_command))
+    ptb_app.add_handler(CommandHandler("request_index", request_index_command))
     ptb_app.add_handler(CommandHandler("pm_on", pm_on_command))
     ptb_app.add_handler(CommandHandler("pm_off", pm_off_command))
 
