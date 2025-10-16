@@ -73,6 +73,7 @@ HELP_TEXT = (
     "• `/deleteall` - Delete all files from the current database.\n"
     "• `/ban <user_id>` - Ban a user.\n"
     "• `/unban <user_id>` - Unban a user.\n"
+    "• `/freeforall` - Grant 12-hour premium access to all users.\n"
     "• `/broadcast <msg>` - Send a message to all users.\n"
     "• `/grp_broadcast <msg>` - Send a message to all connected groups where the bot is an admin.\n"
         "• `/index_channel <channel_id> [skip]` - Index files from a channel.\n"
@@ -1274,6 +1275,45 @@ async def ban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_delete_message(context, update.effective_chat.id, "❌ An error occurred while trying to ban the user.")
 
 
+async def freeforall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to grant 12-hour premium access to all users."""
+    asyncio.create_task(react_to_message_task(update))
+    if update.effective_user.id not in ADMINS:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
+        return
+
+    if users_col is None or referrals_col is None:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ Database not connected.")
+        return
+
+    await send_and_delete_message(context, update.effective_chat.id, "Granting 12-hour premium access to all users...")
+
+    users_cursor = users_col.find({}, {"_id": 1})
+    user_ids = [user["_id"] for user in users_cursor]
+
+    for user_id in user_ids:
+        try:
+            referrals_col.update_one(
+                {"_id": user_id},
+                {"$set": {"premium_until": datetime.datetime.utcnow() + datetime.timedelta(hours=12)}},
+                upsert=True
+            )
+        except Exception as e:
+            logger.error(f"Failed to grant premium to user {user_id}: {e}")
+
+    await send_and_delete_message(context, update.effective_chat.id, f"✅ Premium access granted to {len(user_ids)} users for 12 hours. Notifying users...")
+
+    broadcast_text = "🎉 You have been granted 12 hours of free premium access!"
+    for user_id in user_ids:
+        try:
+            await context.bot.send_message(chat_id=user_id, text=broadcast_text)
+            await asyncio.sleep(0.1)  # Avoid rate limiting
+        except Exception as e:
+            logger.warning(f"Could not send premium notification to user {user_id}: {e}")
+
+    await send_and_delete_message(context, update.effective_chat.id, "✅ All users have been notified.")
+
+
 async def unban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to unban a user by their user ID."""
     asyncio.create_task(react_to_message_task(update))
@@ -2286,6 +2326,7 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("deleteall", delete_all_command))
     ptb_app.add_handler(CommandHandler("ban", ban_user_command))
     ptb_app.add_handler(CommandHandler("unban", unban_user_command))
+    ptb_app.add_handler(CommandHandler("freeforall", freeforall_command))
     ptb_app.add_handler(CommandHandler("broadcast", broadcast_message))
     ptb_app.add_handler(CommandHandler("grp_broadcast", grp_broadcast_command))
     ptb_app.add_handler(CommandHandler("restart", restart_command))
