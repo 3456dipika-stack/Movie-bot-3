@@ -442,7 +442,8 @@ async def send_file_task(user_id: int, source_chat_id: int, context: ContextType
         )
 
         if sent_message:
-            await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
+            if user_id not in ADMINS:
+                await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
             confirmation_text = f"✅ {user_mention}, I have sent the file to you in a private message. It will be deleted automatically in 5 minutes."
             await send_and_delete_message(context, source_chat_id, confirmation_text, parse_mode="HTML")
 
@@ -469,7 +470,8 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
                 message_id=file["file_id"],
             )
             sent_messages.append(sent_message.message_id)
-            await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
+            if user_id not in ADMINS:
+                await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
             await asyncio.sleep(0.5)
 
         confirmation_text = f"✅ {user_mention}, I have sent all files to you in a private message. They will be deleted automatically in 5 minutes."
