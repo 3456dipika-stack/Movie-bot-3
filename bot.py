@@ -1545,26 +1545,28 @@ async def on_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TY
 # FILE/SEARCH HANDLERS
 # ========================
 
-async def _index_file(context: ContextTypes.DEFAULT_TYPE, message_to_index: Update.message) -> (bool, str):
-    """
-    Reusable helper function to index a single file.
-    Forwards the file to the DB_CHANNEL and saves its metadata to MongoDB.
-    Returns a tuple (success: bool, clean_name: str).
-    """
-    file = message_to_index.document or message_to_index.video or message_to_index.audio
+async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin sends file to bot -> save to channel + DB. Uses connection pooling."""
+    asyncio.create_task(react_to_message_task(update))
+    user_id = update.message.from_user.id
+    if user_id not in ADMINS:
+        return
+
+    file = update.message.document or update.message.video or update.message.audio
     if not file:
-        return False, ""
+        return
 
+    # Forward to database channel
     try:
-        # Forward to database channel
-        forwarded = await message_to_index.forward(DB_CHANNEL)
+        forwarded = await update.message.forward(DB_CHANNEL)
     except TelegramError as e:
-        logger.error(f"Failed to forward message to DB_CHANNEL for indexing: {e}")
-        return False, ""
+        logger.error(f"Failed to forward message from PM to DB_CHANNEL: {e}")
+        await send_and_delete_message(context, update.effective_chat.id, "❌ Failed to forward file to database channel.")
+        return
 
-    # Get filename from caption, then from file_name
-    if message_to_index.caption:
-        raw_name = message_to_index.caption
+    # Get filename from caption, then from file_name, replacing underscores, dots, and hyphens with spaces
+    if update.message.caption:
+        raw_name = update.message.caption
     else:
         raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
 
@@ -1573,6 +1575,7 @@ async def _index_file(context: ContextTypes.DEFAULT_TYPE, message_to_index: Upda
     global current_uri_index, db, files_col, users_col, banned_users_col
 
     saved = False
+    # Start the loop from the current active index and wrap around to try all
     for i in range(len(MONGO_URIS)):
         idx = (current_uri_index + i) % len(MONGO_URIS)
         uri_to_try = MONGO_URIS[idx]
@@ -1600,29 +1603,16 @@ async def _index_file(context: ContextTypes.DEFAULT_TYPE, message_to_index: Upda
                 banned_users_col = temp_db["banned_users"]
                 logger.info(f"Switched active MongoDB connection to index {current_uri_index}.")
 
+            await send_and_delete_message(context, update.effective_chat.id, f"✅ Saved to DB #{idx + 1}: {clean_name}")
             saved = True
             break
         except Exception as e:
             logger.error(f"Error saving file with URI #{idx + 1}: {e}")
             if idx == current_uri_index and len(MONGO_URIS) > 1:
-                pass
+                 await send_and_delete_message(context, update.effective_chat.id, f"⚠️ Primary DB failed. Trying next available URI...")
 
-    return saved, clean_name
-
-
-async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin sends file to bot -> save to channel + DB. Uses the helper function."""
-    asyncio.create_task(react_to_message_task(update))
-    user_id = update.message.from_user.id
-    if user_id not in ADMINS:
-        return
-
-    saved, clean_name = await _index_file(context, update.message)
-
-    if saved:
-        await send_and_delete_message(context, update.effective_chat.id, f"✅ Saved to DB: {clean_name}")
-    else:
-        logger.error("All MongoDB URIs have been tried and failed for PM file save.")
+    if not saved:
+        logger.error("All MongoDB URIs have been tried and failed.")
         await send_and_delete_message(context, update.effective_chat.id, "❌ Failed to save file on all available databases.")
 
 
@@ -2135,23 +2125,52 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         original_message_id = int(original_message_id_str)
 
         try:
-            # Forward the original message to the bot itself to get a message object
-            temp_forwarded_message = await context.bot.forward_message(
-                chat_id=query.from_user.id,
+            # Forward the original message directly to the database channel
+            forwarded_message = await context.bot.forward_message(
+                chat_id=DB_CHANNEL,
                 from_chat_id=original_chat_id,
                 message_id=original_message_id
             )
 
-            # Now index the new message object we received
-            saved, clean_name = await _index_file(context, temp_forwarded_message)
+            # The forwarded message in the DB channel is the one we need to save.
+            # We can reuse the logic from `save_file_from_channel` but simplified.
+            file = forwarded_message.document or forwarded_message.video or forwarded_message.audio
+            if file:
+                if forwarded_message.caption:
+                    raw_name = forwarded_message.caption
+                else:
+                    raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
 
-            # Clean up the temporary message sent to the admin
-            await context.bot.delete_message(chat_id=query.from_user.id, message_id=temp_forwarded_message.message_id)
+                clean_name = raw_name.replace("_", " ").replace(".", " ").replace("-", " ") if raw_name else "Unknown"
 
-            if saved:
-                await query.edit_message_text(f"✅ **Indexed:** {clean_name}")
+                # Save metadata to the first available database
+                saved = False
+                for i in range(len(MONGO_URIS)):
+                    idx = (current_uri_index + i) % len(MONGO_URIS)
+                    uri_to_try = MONGO_URIS[idx]
+                    client = mongo_clients.get(uri_to_try)
+                    if not client: continue
+                    try:
+                        temp_db = client["telegram_files"]
+                        temp_files_col = temp_db["files"]
+                        temp_files_col.insert_one({
+                            "file_name": clean_name,
+                            "file_id": forwarded_message.message_id,
+                            "channel_id": DB_CHANNEL,
+                            "file_size": file.file_size,
+                        })
+                        saved = True
+                        break
+                    except Exception as e:
+                        logger.error(f"DB Error while indexing from admin approval: {e}")
+
+                if saved:
+                    await query.edit_message_text(f"✅ **Indexed:** {clean_name}")
+                else:
+                    await query.edit_message_text("❌ **Failed:** Could not save the file to any database.")
             else:
-                await query.edit_message_text("❌ **Failed:** Could not save the file to any database.")
+                await query.edit_message_text("❌ **Failed:** The forwarded message does not contain a valid file.")
+
         except Exception as e:
             logger.error(f"Error during admin indexing approval: {e}")
             await query.edit_message_text(f"❌ **Error:** An unexpected error occurred.\n`{e}`")
