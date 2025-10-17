@@ -744,12 +744,29 @@ async def request_index_command(update: Update, context: ContextTypes.DEFAULT_TY
             file_to_send = replied_message.document or replied_message.video or replied_message.audio
 
             try:
-                # Send a new message with the file to the admin
-                sent_file_message = await context.bot.send_document(
-                    chat_id=primary_admin_id,
-                    document=file_to_send.file_id,
-                    caption=replied_message.caption
-                )
+                # Send a new message with the file to the admin, handling different file types
+                if replied_message.document:
+                    sent_file_message = await context.bot.send_document(
+                        chat_id=primary_admin_id,
+                        document=file_to_send.file_id,
+                        caption=replied_message.caption
+                    )
+                elif replied_message.video:
+                    sent_file_message = await context.bot.send_video(
+                        chat_id=primary_admin_id,
+                        video=file_to_send.file_id,
+                        caption=replied_message.caption
+                    )
+                elif replied_message.audio:
+                    sent_file_message = await context.bot.send_audio(
+                        chat_id=primary_admin_id,
+                        audio=file_to_send.file_id,
+                        caption=replied_message.caption
+                    )
+                else:
+                    # Should not happen due to the check above, but as a fallback
+                    await send_and_delete_message(context, update.effective_chat.id, "❌ Unsupported file type for indexing.")
+                    return
 
                 # Now send the approval message with buttons
                 approval_caption = (
