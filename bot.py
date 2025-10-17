@@ -84,17 +84,13 @@ HELP_TEXT = (
 )
 
 # A list of MongoDB URIs to use. Add as many as you need.
-# IMPORTANT: Replace "REPLACE_WITH_YOUR_PASSWORD" with your actual password.
 MONGO_URIS = [
-    "mongodb+srv://bf44tb5_db_user:REPLACE_WITH_YOUR_PASSWORD@cluster0.lgao3zu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://28c2kqa_db_user:REPLACE_WITH_YOUR_PASSWORD@cluster0.np0ffl0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://bf44tb5_db_user:RhyeHAHsTJeuBPNg@cluster0.lgao3zu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://28c2kqa_db_user:IL51mem7W6g37mA5@cluster0.np0ffl0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
 ]
-# IMPORTANT: Replace "REPLACE_WITH_YOUR_PASSWORD" with your actual password.
-GROUPS_DB_URIS = ["mongodb+srv://6p5e2y8_db_user:REPLACE_WITH_YOUR_PASSWORD@cluster0.j9hcylx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
-# IMPORTANT: Replace "REPLACE_WITH_YOUR_PASSWORD" with your actual password.
-PROMO_LINKS_DB_URI = "mongodb+srv://promo_user:REPLACE_WITH_YOUR_PASSWORD@cluster0.promo.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0" # New DB for promo links
-# IMPORTANT: Replace "REPLACE_WITH_YOUR_PASSWORD" with your actual password.
-REFERRAL_DB_URI = "mongodb+srv://qy8gjiw_db_user:REPLACE_WITH_YOUR_PASSWORD@cluster0.lkkvli8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+GROUPS_DB_URIS = ["mongodb+srv://6p5e2y8_db_user:MxRFLhQ534AI3rfQ@cluster0.j9hcylx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
+PROMO_LINKS_DB_URI = "mongodb+srv://promo_user:your_promo_password@cluster0.promo.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0" # New DB for promo links
+REFERRAL_DB_URI = "mongodb+srv://qy8gjiw_db_user:JjryWhQV4CYtzcYo@cluster0.lkkvli8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 current_uri_index = 0
 
 # Centralized connection manager
