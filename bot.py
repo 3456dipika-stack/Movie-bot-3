@@ -77,19 +77,24 @@ HELP_TEXT = (
     "• `/freeforall` - Grant 12-hour premium access to all users.\n"
     "• `/broadcast <msg>` - Send a message to all users.\n"
     "• `/grp_broadcast <msg>` - Send a message to all connected groups where the bot is an admin.\n"
+    "• `/addjoinchannel <channel_id>` - Temporarily add a channel to the mandatory join list.\n"
     "• `/index <channel_id> [skip]` - Index files from a channel.\n"
     "• `/pm_on` / `/pm_off` - Enable/disable private message search for non-admins.\n"
     "• Send a file to me in a private message to index it."
 )
 
 # A list of MongoDB URIs to use. Add as many as you need.
+# IMPORTANT: Replace "REPLACE_WITH_YOUR_PASSWORD" with your actual password.
 MONGO_URIS = [
-    "mongodb+srv://bf44tb5_db_user:RhyeHAHsTJeuBPNg@cluster0.lgao3zu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-    "mongodb+srv://28c2kqa_db_user:IL51mem7W6g37mA5@cluster0.np0ffl0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://bf44tb5_db_user:REPLACE_WITH_YOUR_PASSWORD@cluster0.lgao3zu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
+    "mongodb+srv://28c2kqa_db_user:REPLACE_WITH_YOUR_PASSWORD@cluster0.np0ffl0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
 ]
-GROUPS_DB_URIS = ["mongodb+srv://6p5e2y8_db_user:MxRFLhQ534AI3rfQ@cluster0.j9hcylx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
-PROMO_LINKS_DB_URI = "mongodb+srv://promo_user:your_promo_password@cluster0.promo.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0" # New DB for promo links
-REFERRAL_DB_URI = "mongodb+srv://qy8gjiw_db_user:JjryWhQV4CYtzcYo@cluster0.lkkvli8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+# IMPORTANT: Replace "REPLACE_WITH_YOUR_PASSWORD" with your actual password.
+GROUPS_DB_URIS = ["mongodb+srv://6p5e2y8_db_user:REPLACE_WITH_YOUR_PASSWORD@cluster0.j9hcylx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
+# IMPORTANT: Replace "REPLACE_WITH_YOUR_PASSWORD" with your actual password.
+PROMO_LINKS_DB_URI = "mongodb+srv://promo_user:REPLACE_WITH_YOUR_PASSWORD@cluster0.promo.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0" # New DB for promo links
+# IMPORTANT: Replace "REPLACE_WITH_YOUR_PASSWORD" with your actual password.
+REFERRAL_DB_URI = "mongodb+srv://qy8gjiw_db_user:REPLACE_WITH_YOUR_PASSWORD@cluster0.lkkvli8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 current_uri_index = 0
 
 # Centralized connection manager
@@ -504,6 +509,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
         return
 
+    if not await check_member_status(update.effective_user.id, context):
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url=f"https://t.me/{ch.split('/')[-1]}")] for ch in JOIN_CHECK_CHANNEL] if isinstance(JOIN_CHECK_CHANNEL, list) else [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{JOIN_CHECK_CHANNEL}")]])
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
+        return
+
     user = update.effective_user
 
     # Handle deep links
@@ -608,6 +618,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await is_banned(update.effective_user.id):
         await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
         return
+    if not await check_member_status(update.effective_user.id, context):
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url=f"https://t.me/{ch.split('/')[-1]}")] for ch in JOIN_CHECK_CHANNEL] if isinstance(JOIN_CHECK_CHANNEL, list) else [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{JOIN_CHECK_CHANNEL}")]])
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
+        return
     await send_and_delete_message(context, update.effective_chat.id, HELP_TEXT, parse_mode="Markdown")
 
 
@@ -618,6 +632,10 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if await is_banned(update.effective_user.id):
         await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
+        return
+    if not await check_member_status(update.effective_user.id, context):
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url=f"https://t.me/{ch.split('/')[-1]}")] for ch in JOIN_CHECK_CHANNEL] if isinstance(JOIN_CHECK_CHANNEL, list) else [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{JOIN_CHECK_CHANNEL}")]])
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
         return
     info_message = (
         "**About this Bot**\n\n"
@@ -659,13 +677,12 @@ async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await send_and_delete_message(context, update.effective_chat.id, "❌ Could not find a random file. The database might be empty.")
     else:
-        # Start the new "join for reward" flow
+        # Start the new "join for reward" flow for a random file
         promo_link_data = await get_random_promo_link()
         if promo_link_data:
-            file_id = str(file_data['_id']) if file_data else 'random'
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton(f"Join {promo_link_data['channel_name']} to get your file!", url=promo_link_data['channel_link'])],
-                [InlineKeyboardButton("I have Joined! ✅", callback_data=f"join_{file_id}_{promo_link_data['channel_id']}")]
+                [InlineKeyboardButton("I have Joined! ✅", callback_data=f"join_get_random_{promo_link_data['channel_id']}")]
             ])
             await send_and_delete_message(
                 context,
@@ -684,6 +701,11 @@ async def refer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if await is_banned(update.effective_user.id):
         await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
+        return
+
+    if not await check_member_status(update.effective_user.id, context):
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url=f"https://t.me/{ch.split('/')[-1]}")] for ch in JOIN_CHECK_CHANNEL] if isinstance(JOIN_CHECK_CHANNEL, list) else [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{JOIN_CHECK_CHANNEL}")]])
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
         return
 
     user_id = update.effective_user.id
@@ -718,6 +740,11 @@ async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if await is_banned(update.effective_user.id):
         await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
+        return
+
+    if not await check_member_status(update.effective_user.id, context):
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url=f"https://t.me/{ch.split('/')[-1]}")] for ch in JOIN_CHECK_CHANNEL] if isinstance(JOIN_CHECK_CHANNEL, list) else [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{JOIN_CHECK_CHANNEL}")]])
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
         return
 
     user = update.effective_user
@@ -1253,6 +1280,11 @@ async def request_index_command(update: Update, context: ContextTypes.DEFAULT_TY
         await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
         return
 
+    if not await check_member_status(update.effective_user.id, context):
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url=f"https://t.me/{ch.split('/')[-1]}")] for ch in JOIN_CHECK_CHANNEL] if isinstance(JOIN_CHECK_CHANNEL, list) else [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{JOIN_CHECK_CHANNEL}")]])
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
+        return
+
     user = update.effective_user
     if not context.args:
         await send_and_delete_message(
@@ -1298,6 +1330,38 @@ async def request_index_command(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
 
+async def add_join_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to add a new channel to the mandatory join list."""
+    asyncio.create_task(react_to_message_task(update))
+    if update.effective_user.id not in ADMINS:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
+        return
+
+    if not context.args or not context.args[0].lstrip('-').isdigit():
+        await send_and_delete_message(context, update.effective_chat.id, "Usage: /addjoinchannel <channel_id>")
+        return
+
+    try:
+        channel_id = int(context.args[0])
+    except ValueError:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ Invalid Channel ID. It must be a number.")
+        return
+
+    try:
+        member = await context.bot.get_chat_member(channel_id, context.bot.id)
+        if member.status not in ["administrator", "creator"]:
+            await send_and_delete_message(context, update.effective_chat.id, f"❌ The bot is not an admin in the channel {channel_id}.")
+            return
+    except TelegramError as e:
+        await send_and_delete_message(context, update.effective_chat.id, f"❌ Could not verify bot's status in channel {channel_id}: {e.message}")
+        return
+
+    if channel_id not in JOIN_CHECK_CHANNEL:
+        JOIN_CHECK_CHANNEL.append(channel_id)
+        await send_and_delete_message(context, update.effective_chat.id, f"✅ Channel {channel_id} has been added to the join list for this session. This change will be lost on restart.")
+    else:
+        await send_and_delete_message(context, update.effective_chat.id, f"⚠️ Channel {channel_id} is already in the join list.")
+
 async def index_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to index files from a given channel."""
     asyncio.create_task(react_to_message_task(update))
@@ -1324,7 +1388,7 @@ async def index_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     # Schedule the indexing task to run in the background
-    asyncio.create_task(index_channel_task(context, channel_id, skip_messages, update.effective_chat.id))
+    asyncio.create_task(index_task(context, channel_id, skip_messages, update.effective_chat.id))
     await send_and_delete_message(context, update.effective_chat.id, "✅ Indexing has started in the background. I will notify you when it's complete.")
 
 async def pm_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1349,7 +1413,7 @@ async def pm_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_and_delete_message(context, update.effective_chat.id, "✅ Private message search has been disabled for all users.")
 
 
-async def index_channel_task(context: ContextTypes.DEFAULT_TYPE, channel_id: int, skip: int, user_chat_id: int):
+async def index_task(context: ContextTypes.DEFAULT_TYPE, channel_id: int, skip: int, user_chat_id: int):
     """Background task to handle channel indexing."""
     last_message_id = 0
     try:
@@ -1951,7 +2015,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- Join for Reward Logic ---
     elif data.startswith("join_"):
-        _, original_callback_data, channel_id_str = data.split("_", 2)
+        # The format is join_{original_callback_data}_{channel_id}
+        parts = data.split("_")
+        channel_id_str = parts[-1]
+        original_callback_data = "_".join(parts[1:-1])
         channel_id = int(channel_id_str)
 
         # Exempt specific channels from the check
@@ -1968,24 +2035,44 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_member:
             await query.answer("✅ Thank you for joining! Sending your reward...", show_alert=True)
 
-            # Re-process the original file request
-            # We create a new "mock" query object to pass to the handler
-            class MockCallbackQuery:
-                def __init__(self, original_query, new_data):
-                    self.data = new_data
-                    self.from_user = original_query.from_user
-                    self.message = original_query.message
-                async def answer(self, *args, **kwargs):
-                    pass # We already answered
+            # --- Send Single File ---
+            if original_callback_data.startswith("get_"):
+                file_id_str = original_callback_data.split("_", 1)[1]
 
-            mock_query = MockCallbackQuery(query, original_callback_data)
-            mock_update = Update(update.update_id, mock_query)
+                if file_id_str == 'random':
+                    file_data = await get_random_file_from_db()
+                else:
+                    file_data = None
+                    for uri in MONGO_URIS:
+                        client = mongo_clients.get(uri)
+                        if not client:
+                            continue
+                        try:
+                            temp_db = client["telegram_files"]
+                            temp_files_col = temp_db["files"]
+                            file_data = temp_files_col.find_one({"_id": ObjectId(file_id_str)})
+                            if file_data: break
+                        except Exception as e:
+                            logger.error(f"DB Error while fetching file {file_id_str} after join: {e}")
 
-            # Setting the user as "premium" for this one-off request to bypass the check
-            context.user_data['is_temp_premium'] = True
-            await button_handler(mock_update, context)
-            del context.user_data['is_temp_premium'] # Clean up immediately
+                if file_data:
+                    asyncio.create_task(send_file_task(user_id, query.message.chat.id, context, file_data, query.from_user.mention_html()))
+                else:
+                    await send_and_delete_message(context, user_id, "❌ File not found.")
 
+            # --- Send All Files (Batch) ---
+            elif original_callback_data.startswith("sendall_"):
+                _, page_str, search_query = original_callback_data.split("_", 2)
+                page = int(page_str)
+                final_results = context.user_data.get('search_results')
+                if not final_results:
+                    await send_and_delete_message(context, user_id, "❌ Search session expired. Please search again.")
+                else:
+                    files_to_send = final_results[page * 10:(page + 1) * 10]
+                    if not files_to_send:
+                        await send_and_delete_message(context, user_id, "❌ No files found on this page to send.")
+                    else:
+                        asyncio.create_task(send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html()))
         else:
             await query.answer("❌ You haven't joined the channel yet. Please join to get your file.", show_alert=True)
         return
@@ -2092,6 +2179,7 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("freeforall", freeforall_command))
     ptb_app.add_handler(CommandHandler("broadcast", broadcast_message))
     ptb_app.add_handler(CommandHandler("grp_broadcast", grp_broadcast_command))
+    ptb_app.add_handler(CommandHandler("addjoinchannel", add_join_channel_command))
     ptb_app.add_handler(CommandHandler("restart", restart_command))
     ptb_app.add_handler(CommandHandler("index", index_command))
     ptb_app.add_handler(CommandHandler("request_index", request_index_command))
