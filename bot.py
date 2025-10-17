@@ -79,6 +79,8 @@ HELP_TEXT = (
     "• `/grp_broadcast <msg>` - Send a message to all connected groups.\n"
     "• `/addpromo <link> <id> <name>` - Add a promotional channel.\n"
     "• `/removepromo <id>` - Remove a promotional channel.\n"
+    "• `/done` - Reply to a file to approve and index it.\n"
+    "• `/cancel` - Reply to a file to reject it.\n"
     "• `/index <channel_id> [skip]` - Index all files from a given channel.\n"
     "• `/restart` - Restart the bot.\n"
     "• `/pm_on` - Allow all users to search in private messages.\n"
@@ -768,24 +770,17 @@ async def request_index_command(update: Update, context: ContextTypes.DEFAULT_TY
                     await send_and_delete_message(context, update.effective_chat.id, "❌ Unsupported file type for indexing.")
                     return
 
-                # Now send the approval message with buttons
+                # Now send the approval instructions
                 approval_caption = (
                     f"**File Index Request**\n\n"
                     f"**From User:** {requester_mention}\n"
                     f"**User ID:** `{user.id}`\n\n"
-                    "Please review and decide whether to index this file."
+                    "Reply to the file above with `/done` to index it, or `/cancel` to reject it."
                 )
-
-                # The callback now refers to the message the bot just sent
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ Index File", callback_data=f"admin_index_{sent_file_message.chat_id}_{sent_file_message.message_id}")],
-                    [InlineKeyboardButton("❌ Cancel", callback_data="admin_cancel_index")]
-                ])
 
                 await context.bot.send_message(
                     chat_id=primary_admin_id,
                     text=approval_caption,
-                    reply_markup=keyboard,
                     parse_mode="HTML"
                 )
                 await send_and_delete_message(context, update.effective_chat.id, "✅ Your request to index this file has been sent to the admin for approval.")
@@ -1366,6 +1361,87 @@ async def remove_promo_command(update: Update, context: ContextTypes.DEFAULT_TYP
             await send_and_delete_message(context, update.effective_chat.id, "❌ Failed to remove promotional channel from the database.")
     else:
         await send_and_delete_message(context, update.effective_chat.id, "❌ Promotional links database not connected.")
+
+async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to approve and index a user-submitted file."""
+    asyncio.create_task(react_to_message_task(update))
+    user = update.effective_user
+    if user.id not in ADMINS:
+        return # Silently ignore from non-admins
+
+    replied_message = update.message.reply_to_message
+    if not replied_message or not (replied_message.document or replied_message.video or replied_message.audio):
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You must reply to a file message to use this command.")
+        return
+
+    # The replied message is the one to be indexed.
+    # We can reuse the logic from `save_file_from_channel` but simplified.
+    try:
+        forwarded_message = await replied_message.forward(DB_CHANNEL)
+
+        file = forwarded_message.document or forwarded_message.video or forwarded_message.audio
+        if file:
+            if forwarded_message.caption:
+                raw_name = forwarded_message.caption
+            else:
+                raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
+
+            clean_name = raw_name.replace("_", " ").replace(".", " ").replace("-", " ") if raw_name else "Unknown"
+
+            saved = False
+            for i in range(len(MONGO_URIS)):
+                idx = (current_uri_index + i) % len(MONGO_URIS)
+                uri_to_try = MONGO_URIS[idx]
+                client = mongo_clients.get(uri_to_try)
+                if not client: continue
+                try:
+                    temp_db = client["telegram_files"]
+                    temp_files_col = temp_db["files"]
+                    temp_files_col.insert_one({
+                        "file_name": clean_name,
+                        "file_id": forwarded_message.message_id,
+                        "channel_id": DB_CHANNEL,
+                        "file_size": file.file_size,
+                    })
+                    saved = True
+                    break
+                except Exception as e:
+                    logger.error(f"DB Error while indexing from /done command: {e}")
+
+            if saved:
+                await send_and_delete_message(context, update.effective_chat.id, f"✅ **Indexed:** {clean_name}")
+            else:
+                await send_and_delete_message(context, update.effective_chat.id, "❌ **Failed:** Could not save the file to any database.")
+        else:
+            await send_and_delete_message(context, update.effective_chat.id, "❌ **Failed:** The replied message does not contain a valid file.")
+    except Exception as e:
+        logger.error(f"Error during /done command: {e}")
+        await send_and_delete_message(context, update.effective_chat.id, f"❌ **Error:** An unexpected error occurred.\n`{e}`")
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to reject a user-submitted file."""
+    asyncio.create_task(react_to_message_task(update))
+    user = update.effective_user
+    if user.id not in ADMINS:
+        return # Silently ignore from non-admins
+
+    replied_message = update.message.reply_to_message
+    if not replied_message:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You must reply to a message to use this command.")
+        return
+
+    try:
+        # To keep things clean, delete the bot's messages (the file and the instruction message)
+        await replied_message.delete()
+        await update.message.delete()
+        # Find the instruction message that came after the file and delete it too.
+        # This is a bit tricky, but we can assume it's the message right after the file.
+        # A more robust solution might involve storing message IDs, but this is simpler.
+    except TelegramError as e:
+        logger.warning(f"Could not delete messages on /cancel: {e}")
+
+    await send_and_delete_message(context, update.effective_chat.id, "❌ Request cancelled.")
+
 
 async def index_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to index files from a given channel."""
@@ -2144,64 +2220,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("❌ You haven't joined the channel yet. Please join to get your file.", show_alert=True)
         return
 
-    # --- Admin Indexing Approval ---
-    elif data.startswith("admin_index_"):
-        _, bot_message_chat_id_str, bot_message_id_str = data.split("_", 2)
-        bot_message_chat_id = int(bot_message_chat_id_str)
-        bot_message_id = int(bot_message_id_str)
-
-        try:
-            # Forward the bot-owned message to the database channel
-            forwarded_message = await context.bot.forward_message(
-                chat_id=DB_CHANNEL,
-                from_chat_id=bot_message_chat_id,
-                message_id=bot_message_id
-            )
-
-            # The forwarded message in the DB channel is the one we need to save.
-            file = forwarded_message.document or forwarded_message.video or forwarded_message.audio
-            if file:
-                if forwarded_message.caption:
-                    raw_name = forwarded_message.caption
-                else:
-                    raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
-
-                clean_name = raw_name.replace("_", " ").replace(".", " ").replace("-", " ") if raw_name else "Unknown"
-
-                # Save metadata to the first available database
-                saved = False
-                for i in range(len(MONGO_URIS)):
-                    idx = (current_uri_index + i) % len(MONGO_URIS)
-                    uri_to_try = MONGO_URIS[idx]
-                    client = mongo_clients.get(uri_to_try)
-                    if not client: continue
-                    try:
-                        temp_db = client["telegram_files"]
-                        temp_files_col = temp_db["files"]
-                        temp_files_col.insert_one({
-                            "file_name": clean_name,
-                            "file_id": forwarded_message.message_id,
-                            "channel_id": DB_CHANNEL,
-                            "file_size": file.file_size,
-                        })
-                        saved = True
-                        break
-                    except Exception as e:
-                        logger.error(f"DB Error while indexing from admin approval: {e}")
-
-                if saved:
-                    await query.edit_message_text(f"✅ **Indexed:** {clean_name}")
-                else:
-                    await query.edit_message_text("❌ **Failed:** Could not save the file to any database.")
-            else:
-                await query.edit_message_text("❌ **Failed:** The forwarded message does not contain a valid file.")
-
-        except Exception as e:
-            logger.error(f"Error during admin indexing approval: {e}")
-            await query.edit_message_text(f"❌ **Error:** An unexpected error occurred.\n`{e}`")
-
-    elif data == "admin_cancel_index":
-        await query.edit_message_text("❌ **Cancelled:** The file indexing request was cancelled.")
+    # --- Admin Indexing Approval (REMOVED, now handled by /done and /cancel commands) ---
 
     # --- Other Button Logic (Pagination, Start Menu, etc.) ---
     elif data.startswith("page_"):
@@ -2308,6 +2327,8 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("restart", restart_command))
     ptb_app.add_handler(CommandHandler("addpromo", add_promo_command))
     ptb_app.add_handler(CommandHandler("removepromo", remove_promo_command))
+    ptb_app.add_handler(CommandHandler("done", done_command))
+    ptb_app.add_handler(CommandHandler("cancel", cancel_command))
     ptb_app.add_handler(CommandHandler("index", index_command))
     ptb_app.add_handler(CommandHandler("pm_on", pm_on_command))
     ptb_app.add_handler(CommandHandler("pm_off", pm_off_command))
