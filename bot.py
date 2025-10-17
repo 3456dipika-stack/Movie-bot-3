@@ -741,30 +741,39 @@ async def request_index_command(update: Update, context: ContextTypes.DEFAULT_TY
                 "Please review and decide whether to index this file."
             )
 
-            # We need the chat_id and message_id of the replied-to message to forward it
-            original_chat_id = replied_message.chat.id
-            original_message_id = replied_message.message_id
-
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Index File", callback_data=f"admin_index_{original_chat_id}_{original_message_id}")],
-                [InlineKeyboardButton("❌ Cancel", callback_data="admin_cancel_index")]
-            ])
+            file_to_send = replied_message.document or replied_message.video or replied_message.audio
 
             try:
-                await context.bot.forward_message(
+                # Send a new message with the file to the admin
+                sent_file_message = await context.bot.send_document(
                     chat_id=primary_admin_id,
-                    from_chat_id=original_chat_id,
-                    message_id=original_message_id
+                    document=file_to_send.file_id,
+                    caption=replied_message.caption
                 )
+
+                # Now send the approval message with buttons
+                approval_caption = (
+                    f"**File Index Request**\n\n"
+                    f"**From User:** {requester_mention}\n"
+                    f"**User ID:** `{user.id}`\n\n"
+                    "Please review and decide whether to index this file."
+                )
+
+                # The callback now refers to the message the bot just sent
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Index File", callback_data=f"admin_index_{sent_file_message.chat_id}_{sent_file_message.message_id}")],
+                    [InlineKeyboardButton("❌ Cancel", callback_data="admin_cancel_index")]
+                ])
+
                 await context.bot.send_message(
                     chat_id=primary_admin_id,
-                    text=caption,
+                    text=approval_caption,
                     reply_markup=keyboard,
                     parse_mode="HTML"
                 )
                 await send_and_delete_message(context, update.effective_chat.id, "✅ Your request to index this file has been sent to the admin for approval.")
             except TelegramError as e:
-                logger.error(f"Failed to forward file for indexing approval: {e}")
+                logger.error(f"Failed to send file for indexing approval: {e}")
                 await send_and_delete_message(context, update.effective_chat.id, "❌ Could not send the file to the admin for approval. Please try again later.")
         else:
             await send_and_delete_message(context, update.effective_chat.id, "❌ No admin configured to approve requests.")
@@ -2120,20 +2129,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- Admin Indexing Approval ---
     elif data.startswith("admin_index_"):
-        _, original_chat_id_str, original_message_id_str = data.split("_", 2)
-        original_chat_id = int(original_chat_id_str)
-        original_message_id = int(original_message_id_str)
+        _, bot_message_chat_id_str, bot_message_id_str = data.split("_", 2)
+        bot_message_chat_id = int(bot_message_chat_id_str)
+        bot_message_id = int(bot_message_id_str)
 
         try:
-            # Forward the original message directly to the database channel
+            # Forward the bot-owned message to the database channel
             forwarded_message = await context.bot.forward_message(
                 chat_id=DB_CHANNEL,
-                from_chat_id=original_chat_id,
-                message_id=original_message_id
+                from_chat_id=bot_message_chat_id,
+                message_id=bot_message_id
             )
 
             # The forwarded message in the DB channel is the one we need to save.
-            # We can reuse the logic from `save_file_from_channel` but simplified.
             file = forwarded_message.document or forwarded_message.video or forwarded_message.audio
             if file:
                 if forwarded_message.caption:
