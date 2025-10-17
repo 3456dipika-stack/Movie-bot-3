@@ -62,8 +62,7 @@ HELP_TEXT = (
     "• `/info` - Get information about this bot.\n"
     "• `/rand` - Get a random file from the database.\n"
     "• `/refer` - Get your referral link to earn premium access.\n"
-    "• `/request <name>` - Request a specific file to be added.\n"
-    "• `/request_index <channel_link>` - Request for a channel to be indexed.\n"
+    "• `/request_index` - Reply to a file to request it be indexed, or use with a link to request a channel index.\n"
     "• Send any text to search for a file.\n\n"
     "**Admin Commands:**\n"
     "• `/log` - Show recent error logs.\n"
@@ -78,7 +77,8 @@ HELP_TEXT = (
     "• `/freeforall` - Grant 12-hour premium access to all users.\n"
     "• `/broadcast <msg>` - Send a message to all users.\n"
     "• `/grp_broadcast <msg>` - Send a message to all connected groups.\n"
-    "• `/addjoinchannel <channel_id>` - Temporarily add a channel to the mandatory join list.\n"
+    "• `/addpromo <link> <id> <name>` - Add a promotional channel.\n"
+    "• `/removepromo <id>` - Remove a promotional channel.\n"
     "• `/index <channel_id> [skip]` - Index all files from a given channel.\n"
     "• `/restart` - Restart the bot.\n"
     "• `/pm_on` - Allow all users to search in private messages.\n"
@@ -442,8 +442,7 @@ async def send_file_task(user_id: int, source_chat_id: int, context: ContextType
         )
 
         if sent_message:
-            if user_id not in ADMINS:
-                await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
+            await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
             confirmation_text = f"✅ {user_mention}, I have sent the file to you in a private message. It will be deleted automatically in 5 minutes."
             await send_and_delete_message(context, source_chat_id, confirmation_text, parse_mode="HTML")
 
@@ -470,8 +469,7 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
                 message_id=file["file_id"],
             )
             sent_messages.append(sent_message.message_id)
-            if user_id not in ADMINS:
-                await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
+            await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
             await asyncio.sleep(0.5)
 
         confirmation_text = f"✅ {user_mention}, I have sent all files to you in a private message. They will be deleted automatically in 5 minutes."
@@ -508,11 +506,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if await is_banned(update.effective_user.id):
         await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
-        return
-
-    if not await check_member_status(update.effective_user.id, context):
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url=f"https://t.me/{ch.split('/')[-1]}")] for ch in JOIN_CHECK_CHANNEL] if isinstance(JOIN_CHECK_CHANNEL, list) else [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{JOIN_CHECK_CHANNEL}")]])
-        await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
         return
 
     user = update.effective_user
@@ -565,7 +558,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # The new user will fall through to the standard welcome message.
 
         # 2. Verification Link Handling (REMOVED)
-        # This section is removed as the new system does not use verification deep links.
         pass
 
     # Save user info now. If they were referred, they are now marked as "existing".
@@ -619,10 +611,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await is_banned(update.effective_user.id):
         await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
         return
-    if not await check_member_status(update.effective_user.id, context):
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url=f"https://t.me/{ch.split('/')[-1]}")] for ch in JOIN_CHECK_CHANNEL] if isinstance(JOIN_CHECK_CHANNEL, list) else [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{JOIN_CHECK_CHANNEL}")]])
-        await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
-        return
     await send_and_delete_message(context, update.effective_chat.id, HELP_TEXT, parse_mode="Markdown")
 
 
@@ -633,10 +621,6 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if await is_banned(update.effective_user.id):
         await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
-        return
-    if not await check_member_status(update.effective_user.id, context):
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url=f"https://t.me/{ch.split('/')[-1]}")] for ch in JOIN_CHECK_CHANNEL] if isinstance(JOIN_CHECK_CHANNEL, list) else [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{JOIN_CHECK_CHANNEL}")]])
-        await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
         return
     info_message = (
         "**About this Bot**\n\n"
@@ -704,11 +688,6 @@ async def refer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
         return
 
-    if not await check_member_status(update.effective_user.id, context):
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url=f"https://t.me/{ch.split('/')[-1]}")] for ch in JOIN_CHECK_CHANNEL] if isinstance(JOIN_CHECK_CHANNEL, list) else [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{JOIN_CHECK_CHANNEL}")]])
-        await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
-        return
-
     user_id = update.effective_user.id
     bot_username = context.bot.username
     referral_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
@@ -734,8 +713,10 @@ async def refer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_delete_message(context, update.effective_chat.id, "❌ An error occurred while fetching your referral data.")
 
 
-async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the /request command for users to request files."""
+async def request_index_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Allows any user to request a channel to be indexed, or to request a specific file to be indexed by replying to it.
+    """
     asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
@@ -743,54 +724,80 @@ async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
         return
 
-    if not await check_member_status(update.effective_user.id, context):
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url=f"https://t.me/{ch.split('/')[-1]}")] for ch in JOIN_CHECK_CHANNEL] if isinstance(JOIN_CHECK_CHANNEL, list) else [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{JOIN_CHECK_CHANNEL}")]])
-        await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
+    user = update.effective_user
+    replied_message = update.message.reply_to_message
+
+    # Workflow for replying to a file to request its index
+    if replied_message and (replied_message.document or replied_message.video or replied_message.audio):
+        if ADMINS:
+            primary_admin_id = ADMINS[0]
+            requester_mention = user.mention_html()
+
+            # Forward the file to the admin with approval buttons
+            caption = (
+                f"**File Index Request**\n\n"
+                f"**From User:** {requester_mention}\n"
+                f"**User ID:** `{user.id}`\n\n"
+                "Please review and decide whether to index this file."
+            )
+
+            # We need the chat_id and message_id of the replied-to message to forward it
+            original_chat_id = replied_message.chat.id
+            original_message_id = replied_message.message_id
+
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Index File", callback_data=f"admin_index_{original_chat_id}_{original_message_id}")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="admin_cancel_index")]
+            ])
+
+            try:
+                await context.bot.forward_message(
+                    chat_id=primary_admin_id,
+                    from_chat_id=original_chat_id,
+                    message_id=original_message_id
+                )
+                await context.bot.send_message(
+                    chat_id=primary_admin_id,
+                    text=caption,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+                await send_and_delete_message(context, update.effective_chat.id, "✅ Your request to index this file has been sent to the admin for approval.")
+            except TelegramError as e:
+                logger.error(f"Failed to forward file for indexing approval: {e}")
+                await send_and_delete_message(context, update.effective_chat.id, "❌ Could not send the file to the admin for approval. Please try again later.")
+        else:
+            await send_and_delete_message(context, update.effective_chat.id, "❌ No admin configured to approve requests.")
         return
 
-    user = update.effective_user
+    # Original workflow for requesting a channel index
     if not context.args:
         await send_and_delete_message(
             context,
             update.effective_chat.id,
-            "Please provide a movie or file name to request.\n\nUsage: `/request <name>`",
+            "**Usage:**\n"
+            "1. Reply to a file with `/request_index` to request it to be indexed.\n"
+            "2. Use `/request_index <channel_link>` to request a channel to be indexed.",
             parse_mode="Markdown"
         )
         return
 
     request_text = " ".join(context.args)
-
-    # Format the message for the log channel
     log_message = (
-        f"🙏 **New Request**\n\n"
+        f"🙏 **New Channel Index Request**\n\n"
         f"**From User:** {user.mention_html()}\n"
         f"**User ID:** `{user.id}`\n"
         f"**Username:** @{user.username or 'N/A'}\n\n"
-        f"**Request:**\n`{request_text}`"
+        f"**Channel to Index:**\n`{request_text}`"
     )
 
     try:
-        # Forward the request to the log channel
-        await context.bot.send_message(
-            chat_id=LOG_CHANNEL,
-            text=log_message,
-            parse_mode="HTML"
-        )
-        # Confirm to the user
-        confirmation_text = f"✅ {user.mention_html()}, your request has been sent to the admins. They will be notified."
-        await send_and_delete_message(
-            context,
-            update.effective_chat.id,
-            confirmation_text,
-            parse_mode="HTML"
-        )
+        await context.bot.send_message(chat_id=LOG_CHANNEL, text=log_message, parse_mode="HTML")
+        confirmation_text = f"✅ {user.mention_html()}, your request to index the channel has been sent to the admins."
+        await send_and_delete_message(context, update.effective_chat.id, confirmation_text, parse_mode="HTML")
     except TelegramError as e:
-        logger.error(f"Failed to process /request command: {e}")
-        await send_and_delete_message(
-            context,
-            update.effective_chat.id,
-            "❌ Sorry, there was an error sending your request. Please try again later."
-        )
+        logger.error(f"Failed to process /request_index command for a channel: {e}")
+        await send_and_delete_message(context, update.effective_chat.id, "❌ Sorry, there was an error sending your request.")
 
 
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1272,96 +1279,67 @@ async def grp_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TY
     await send_and_delete_message(context, update.effective_chat.id, f"✅ Group broadcast complete!\n\nSent to: {sent_count} groups\nFailed: {failed_count} groups")
 
 
-async def request_index_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Allows any user to request a channel to be indexed."""
+async def add_promo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to add a promotional channel to the database."""
     asyncio.create_task(react_to_message_task(update))
-    if not await bot_can_respond(update, context):
-        return
-    if await is_banned(update.effective_user.id):
-        await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
+    if update.effective_user.id not in ADMINS:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
         return
 
-    if not await check_member_status(update.effective_user.id, context):
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Join Channel", url=f"https://t.me/{ch.split('/')[-1]}")] for ch in JOIN_CHECK_CHANNEL] if isinstance(JOIN_CHECK_CHANNEL, list) else [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{JOIN_CHECK_CHANNEL}")]])
-        await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
+    if len(context.args) != 3:
+        await send_and_delete_message(context, update.effective_chat.id, "Usage: /addpromo <channel_link> <channel_id> <channel_name>")
         return
 
-    user = update.effective_user
-    if not context.args:
-        await send_and_delete_message(
-            context,
-            update.effective_chat.id,
-            "Please provide a channel link to request.\n\nUsage: `/request_index <channel_link>`",
-            parse_mode="Markdown"
-        )
-        return
-
-    request_text = " ".join(context.args)
-
-    # Format the message for the log channel
-    log_message = (
-        f"🙏 **New Index Request**\n\n"
-        f"**From User:** {user.mention_html()}\n"
-        f"**User ID:** `{user.id}`\n"
-        f"**Username:** @{user.username or 'N/A'}\n\n"
-        f"**Channel to Index:**\n`{request_text}`"
-    )
-
+    channel_link, channel_id_str, channel_name = context.args
     try:
-        # Forward the request to the log channel
-        await context.bot.send_message(
-            chat_id=LOG_CHANNEL,
-            text=log_message,
-            parse_mode="HTML"
-        )
-        # Confirm to the user
-        confirmation_text = f"✅ {user.mention_html()}, your request to index the channel has been sent to the admins."
-        await send_and_delete_message(
-            context,
-            update.effective_chat.id,
-            confirmation_text,
-            parse_mode="HTML"
-        )
-    except TelegramError as e:
-        logger.error(f"Failed to process /request_index command: {e}")
-        await send_and_delete_message(
-            context,
-            update.effective_chat.id,
-            "❌ Sorry, there was an error sending your request. Please try again later."
-        )
+        channel_id = int(channel_id_str)
+    except ValueError:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ Channel ID must be a number.")
+        return
 
+    if promo_links_col is not None:
+        try:
+            promo_links_col.update_one(
+                {"_id": channel_id},
+                {"$set": {"channel_link": channel_link, "channel_name": channel_name}},
+                upsert=True
+            )
+            await send_and_delete_message(context, update.effective_chat.id, f"✅ Promotional channel '{channel_name}' has been added/updated.")
+        except Exception as e:
+            logger.error(f"Failed to add promo channel: {e}")
+            await send_and_delete_message(context, update.effective_chat.id, "❌ Failed to add promotional channel to the database.")
+    else:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ Promotional links database not connected.")
 
-async def add_join_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to add a new channel to the mandatory join list."""
+async def remove_promo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to remove a promotional channel from the database."""
     asyncio.create_task(react_to_message_task(update))
     if update.effective_user.id not in ADMINS:
         await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
         return
 
     if not context.args or not context.args[0].lstrip('-').isdigit():
-        await send_and_delete_message(context, update.effective_chat.id, "Usage: /addjoinchannel <channel_id>")
+        await send_and_delete_message(context, update.effective_chat.id, "Usage: /removepromo <channel_id>")
         return
 
     try:
         channel_id = int(context.args[0])
     except ValueError:
-        await send_and_delete_message(context, update.effective_chat.id, "❌ Invalid Channel ID. It must be a number.")
+        await send_and_delete_message(context, update.effective_chat.id, "❌ Channel ID must be a number.")
         return
 
-    try:
-        member = await context.bot.get_chat_member(channel_id, context.bot.id)
-        if member.status not in ["administrator", "creator"]:
-            await send_and_delete_message(context, update.effective_chat.id, f"❌ The bot is not an admin in the channel {channel_id}.")
-            return
-    except TelegramError as e:
-        await send_and_delete_message(context, update.effective_chat.id, f"❌ Could not verify bot's status in channel {channel_id}: {e.message}")
-        return
-
-    if channel_id not in JOIN_CHECK_CHANNEL:
-        JOIN_CHECK_CHANNEL.append(channel_id)
-        await send_and_delete_message(context, update.effective_chat.id, f"✅ Channel {channel_id} has been added to the join list for this session. This change will be lost on restart.")
+    if promo_links_col is not None:
+        try:
+            result = promo_links_col.delete_one({"_id": channel_id})
+            if result.deleted_count > 0:
+                await send_and_delete_message(context, update.effective_chat.id, f"✅ Promotional channel with ID {channel_id} has been removed.")
+            else:
+                await send_and_delete_message(context, update.effective_chat.id, f"❌ Promotional channel with ID {channel_id} not found.")
+        except Exception as e:
+            logger.error(f"Failed to remove promo channel: {e}")
+            await send_and_delete_message(context, update.effective_chat.id, "❌ Failed to remove promotional channel from the database.")
     else:
-        await send_and_delete_message(context, update.effective_chat.id, f"⚠️ Channel {channel_id} is already in the join list.")
+        await send_and_delete_message(context, update.effective_chat.id, "❌ Promotional links database not connected.")
 
 async def index_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to index files from a given channel."""
@@ -1412,6 +1390,42 @@ async def pm_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     PM_SEARCH_ENABLED = False
     await send_and_delete_message(context, update.effective_chat.id, "✅ Private message search has been disabled for all users.")
+
+
+async def addlinkshort_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to set the link shortener API details on all verification DBs."""
+    asyncio.create_task(react_to_message_task(update))
+    if update.effective_user.id not in ADMINS:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
+        return
+
+    if len(context.args) != 2:
+        await send_and_delete_message(context, update.effective_chat.id, "Usage: /addlinkshort <api_url> <api_key>")
+        return
+
+    api_url = context.args[0]
+    api_key = context.args[1]
+
+    success_count = 0
+    for uri in VERIFICATION_DB_URIS:
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
+        try:
+            temp_db = client["verification_db"]
+            config_col = temp_db["config"]
+
+            # Store the config as a single document
+            config_col.update_one(
+                {"_id": "shortener_config"},
+                {"$set": {"api_url": api_url, "api_key": api_key}},
+                upsert=True
+            )
+            success_count += 1
+        except Exception as e:
+            logger.error(f"Failed to save shortener config to ...{uri[-20:]}: {e}")
+
+    await send_and_delete_message(context, update.effective_chat.id, f"✅ Link shortener details saved to {success_count}/{len(VERIFICATION_DB_URIS)} databases.")
 
 
 async def index_task(context: ContextTypes.DEFAULT_TYPE, channel_id: int, skip: int, user_chat_id: int):
@@ -1531,24 +1545,26 @@ async def on_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TY
 # FILE/SEARCH HANDLERS
 # ========================
 
-async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin sends file to bot -> save to channel + DB. Uses connection pooling."""
-    asyncio.create_task(react_to_message_task(update))
-    user_id = update.message.from_user.id
-    if user_id not in ADMINS:
-        return
-
-    file = update.message.document or update.message.video or update.message.audio
+async def _index_file(context: ContextTypes.DEFAULT_TYPE, message_to_index: Update.message) -> (bool, str):
+    """
+    Reusable helper function to index a single file.
+    Forwards the file to the DB_CHANNEL and saves its metadata to MongoDB.
+    Returns a tuple (success: bool, clean_name: str).
+    """
+    file = message_to_index.document or message_to_index.video or message_to_index.audio
     if not file:
-        return
+        return False, ""
 
-    # Forward to database channel
-    forwarded = await update.message.forward(DB_CHANNEL)
+    try:
+        # Forward to database channel
+        forwarded = await message_to_index.forward(DB_CHANNEL)
+    except TelegramError as e:
+        logger.error(f"Failed to forward message to DB_CHANNEL for indexing: {e}")
+        return False, ""
 
-    # Get filename from caption, then from file_name, replacing underscores, dots, and hyphens with spaces
-    # Otherwise, use a default value
-    if update.message.caption:
-        raw_name = update.message.caption
+    # Get filename from caption, then from file_name
+    if message_to_index.caption:
+        raw_name = message_to_index.caption
     else:
         raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
 
@@ -1557,12 +1573,11 @@ async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global current_uri_index, db, files_col, users_col, banned_users_col
 
     saved = False
-    # Start the loop from the current active index and wrap around to try all
     for i in range(len(MONGO_URIS)):
         idx = (current_uri_index + i) % len(MONGO_URIS)
         uri_to_try = MONGO_URIS[idx]
-
         client = mongo_clients.get(uri_to_try)
+
         if not client:
             logger.warning(f"Skipping disconnected DB for file save: ...{uri_to_try[-20:]}")
             continue
@@ -1570,8 +1585,6 @@ async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             temp_db = client["telegram_files"]
             temp_files_col = temp_db["files"]
-
-            # Try to save metadata
             temp_files_col.insert_one({
                 "file_name": clean_name,
                 "file_id": forwarded.message_id,
@@ -1579,7 +1592,6 @@ async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "file_size": file.file_size,
             })
 
-            # If successful and this is not the current active DB, switch to it.
             if idx != current_uri_index:
                 current_uri_index = idx
                 db = temp_db
@@ -1588,16 +1600,29 @@ async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 banned_users_col = temp_db["banned_users"]
                 logger.info(f"Switched active MongoDB connection to index {current_uri_index}.")
 
-            await send_and_delete_message(context, update.effective_chat.id, f"✅ Saved to DB #{idx + 1}: {clean_name}")
             saved = True
-            break # Exit loop on success
+            break
         except Exception as e:
             logger.error(f"Error saving file with URI #{idx + 1}: {e}")
             if idx == current_uri_index and len(MONGO_URIS) > 1:
-                 await send_and_delete_message(context, update.effective_chat.id, f"⚠️ Primary DB failed. Trying next available URI...")
+                pass
 
-    if not saved:
-        logger.error("All MongoDB URIs have been tried and failed.")
+    return saved, clean_name
+
+
+async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin sends file to bot -> save to channel + DB. Uses the helper function."""
+    asyncio.create_task(react_to_message_task(update))
+    user_id = update.message.from_user.id
+    if user_id not in ADMINS:
+        return
+
+    saved, clean_name = await _index_file(context, update.message)
+
+    if saved:
+        await send_and_delete_message(context, update.effective_chat.id, f"✅ Saved to DB: {clean_name}")
+    else:
+        logger.error("All MongoDB URIs have been tried and failed for PM file save.")
         await send_and_delete_message(context, update.effective_chat.id, "❌ Failed to save file on all available databases.")
 
 
@@ -1919,6 +1944,41 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
         logger.error(f"Error sending or editing search results page: {e}")
 
 
+async def start_verification_process(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_mention: str, source_chat_id: int, original_request: dict):
+    """
+    Starts the 3-step verification process for a user.
+    `original_request` should contain the file request details.
+    """
+    verification_id = str(uuid.uuid4())
+    progress_data = {
+        "_id": verification_id,
+        "user_id": user_id,
+        "step": 1,
+        "original_request": original_request
+    }
+
+    if await save_verification_progress(progress_data):
+        bot_username = context.bot.username
+        deep_link = f"https://t.me/{bot_username}?start={verification_id}"
+
+        shortened_link = await get_shortened_link(deep_link)
+
+        if "Error:" in shortened_link:
+            await send_and_delete_message(context, user_id, shortened_link)
+        else:
+            # Send the first link to the user's private chat
+            await send_and_delete_message(
+                context,
+                user_id,
+                f"Please complete the 3-step verification to get 24-hour access to all files.\n\n"
+                f"Step 1 of 3: Open this link to continue:\n{shortened_link}"
+            )
+            # Notify in group if the request came from a group
+            if source_chat_id != user_id:
+                 await send_and_delete_message(context, source_chat_id, f"✅ {user_mention}, At first you should start me in private chat. Then please complete the verification in my private chat to get your file.", parse_mode="HTML")
+    else:
+        await send_and_delete_message(context, user_id, "❌ Could not start the verification process. Please try again later.")
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button clicks with new verification flow."""
     asyncio.create_task(react_to_message_task(update))
@@ -1933,25 +1993,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await save_user_info(update.effective_user)
-    if not await check_member_status(update.effective_user.id, context):
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Join Channel: @filestore4u", url="https://t.me/filestore4u")],
-            [InlineKeyboardButton("Join Channel: @code_boost", url="https://t.me/code_boost")],
-            [InlineKeyboardButton("Join Channel: @krbook_official", url="https://t.me/krbook_official")]
-        ])
-        await send_and_delete_message(context, query.message.chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
-        return
-
     data = query.data
     user_id = query.from_user.id
 
     # --- File Request Logic (get_ or sendall_) ---
     if data.startswith("get_") or data.startswith("sendall_"):
         is_premium = await is_user_premium(user_id)
-        is_temp_premium = context.user_data.get('is_temp_premium', False)
 
         # Admins and premium users get files directly
-        if user_id in ADMINS or is_premium or is_temp_premium:
+        if user_id in ADMINS or is_premium:
             if user_id in ADMINS:
                 await send_and_delete_message(context, query.message.chat.id, "⌛ Processing your request as an admin...")
             else:
@@ -2078,6 +2128,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("❌ You haven't joined the channel yet. Please join to get your file.", show_alert=True)
         return
 
+    # --- Admin Indexing Approval ---
+    elif data.startswith("admin_index_"):
+        _, original_chat_id_str, original_message_id_str = data.split("_", 2)
+        original_chat_id = int(original_chat_id_str)
+        original_message_id = int(original_message_id_str)
+
+        try:
+            # Forward the original message to the bot itself to get a message object
+            temp_forwarded_message = await context.bot.forward_message(
+                chat_id=query.from_user.id,
+                from_chat_id=original_chat_id,
+                message_id=original_message_id
+            )
+
+            # Now index the new message object we received
+            saved, clean_name = await _index_file(context, temp_forwarded_message)
+
+            # Clean up the temporary message sent to the admin
+            await context.bot.delete_message(chat_id=query.from_user.id, message_id=temp_forwarded_message.message_id)
+
+            if saved:
+                await query.edit_message_text(f"✅ **Indexed:** {clean_name}")
+            else:
+                await query.edit_message_text("❌ **Failed:** Could not save the file to any database.")
+        except Exception as e:
+            logger.error(f"Error during admin indexing approval: {e}")
+            await query.edit_message_text(f"❌ **Error:** An unexpected error occurred.\n`{e}`")
+
+    elif data == "admin_cancel_index":
+        await query.edit_message_text("❌ **Cancelled:** The file indexing request was cancelled.")
+
     # --- Other Button Logic (Pagination, Start Menu, etc.) ---
     elif data.startswith("page_"):
         _, page_str, search_query = data.split("_", 2)
@@ -2167,7 +2248,7 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("info", info_command))
     ptb_app.add_handler(CommandHandler("rand", rand_command))
     ptb_app.add_handler(CommandHandler("refer", refer_command))
-    ptb_app.add_handler(CommandHandler("request", request_command))
+    ptb_app.add_handler(CommandHandler("request_index", request_index_command))
     ptb_app.add_handler(CommandHandler("log", log_command))
     ptb_app.add_handler(CommandHandler("total_users", total_users_command))
     ptb_app.add_handler(CommandHandler("total_files", total_files_command))
@@ -2180,10 +2261,10 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("freeforall", freeforall_command))
     ptb_app.add_handler(CommandHandler("broadcast", broadcast_message))
     ptb_app.add_handler(CommandHandler("grp_broadcast", grp_broadcast_command))
-    ptb_app.add_handler(CommandHandler("addjoinchannel", add_join_channel_command))
     ptb_app.add_handler(CommandHandler("restart", restart_command))
+    ptb_app.add_handler(CommandHandler("addpromo", add_promo_command))
+    ptb_app.add_handler(CommandHandler("removepromo", remove_promo_command))
     ptb_app.add_handler(CommandHandler("index", index_command))
-    ptb_app.add_handler(CommandHandler("request_index", request_index_command))
     ptb_app.add_handler(CommandHandler("pm_on", pm_on_command))
     ptb_app.add_handler(CommandHandler("pm_off", pm_off_command))
 
