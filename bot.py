@@ -43,7 +43,7 @@ LOG_CHANNEL = -1002988891392  # Channel to log user queries
 # Channels users must join for access
 JOIN_CHECK_CHANNEL = [-1002692055617, -1002551875503, -1002839913869]
 ADMINS = [6705618257]        # Admin IDs
-PM_SEARCH_ENABLED = False   # Controls whether non-admins can search in PM
+PM_SEARCH_ENABLED = True   # Controls whether non-admins can search in PM
 
 # Custom promotional message (Simplified as per the last request)
 REACTIONS = ["👀", "😱", "🔥", "😍", "🎉", "🥰", "😇", "⚡"]
