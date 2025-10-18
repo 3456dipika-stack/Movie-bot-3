@@ -49,7 +49,7 @@ PM_SEARCH_ENABLED = True   # Controls whether non-admins can search in PM
 REACTIONS = ["👀", "😱", "🔥", "😍", "🎉", "🥰", "😇", "⚡"]
 PROMO_CHANNELS = [
     {"name": "@filestore4u", "link": "https://t.me/filestore4u", "id": -1002692055617},
-    {"name": "@freemovie5u", "link": "https://t.me/freemovie5u", "id": -1002551875503},
+    {"name": "@code_boost", "link": "https://t.me/code_boost", "id": -1002551875503},
     {"name": "@KRBOOK_official", "link": "https://t.me/KRBOOK_official", "id": -1002839913869},
 ]
 CUSTOM_PROMO_MESSAGE = (
