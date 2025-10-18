@@ -1974,9 +1974,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if not await bot_can_respond(update, context):
-        return
-
     if await is_banned(update.effective_user.id):
         await send_and_delete_message(context, query.message.chat.id, "❌ You are banned from using this bot.")
         return
