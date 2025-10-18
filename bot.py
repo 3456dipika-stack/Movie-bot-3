@@ -312,7 +312,7 @@ def connect_to_mongo():
     global mongo_clients, db, files_col, users_col, banned_users_col, groups_col, referrals_col, referred_users_col, current_uri_index
 
     # Consolidate all unique URIs
-    all_uris = set(MONGO_URIS + GROUPS_DB_URIS + VERIFICATION_DB_URIS + VERIFIED_USERS_DB_URIS)
+    all_uris = set(MONGO_URIS + GROUPS_DB_URIS)
     if REFERRAL_DB_URI:
         all_uris.add(REFERRAL_DB_URI)
 
