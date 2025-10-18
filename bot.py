@@ -401,18 +401,24 @@ async def send_file_task(user_id: int, source_chat_id: int, context: ContextType
         )
 
         if sent_message:
-            if sent_message.caption and sent_message.caption.strip():
-                new_caption = f'<a href="https://t.me/filestore4u">{html.escape(sent_message.caption)}</a>'
+            caption_text = sent_message.caption.strip() if sent_message.caption else file_data.get("file_name", "")
+            if caption_text:
+                final_caption_text = caption_text
+                while True:
+                    new_caption = f'<a href="https://t.me/filestore4u">{html.escape(final_caption_text)}</a>'
+                    if len(new_caption.encode('utf-8')) <= 1024:
+                        break
+                    final_caption_text = final_caption_text[:-1]
+                    if not final_caption_text:
+                        new_caption = '<a href="https://t.me/filestore4u">Download File</a>'
+                        break
                 try:
-                    if len(new_caption.encode('utf-8')) > 1024:
-                        logger.warning(f"New caption for message {sent_message.message_id} is too long. Skipping link.")
-                    else:
-                        await context.bot.edit_message_caption(
-                            chat_id=user_id,
-                            message_id=sent_message.message_id,
-                            caption=new_caption,
-                            parse_mode="HTML"
-                        )
+                    await context.bot.edit_message_caption(
+                        chat_id=user_id,
+                        message_id=sent_message.message_id,
+                        caption=new_caption,
+                        parse_mode="HTML"
+                    )
                 except TelegramError as e:
                     logger.warning(f"Could not edit caption for message {sent_message.message_id}. Error: {e}")
 
@@ -430,8 +436,8 @@ async def send_file_task(user_id: int, source_chat_id: int, context: ContextType
         else:
             logger.error(f"Failed to send file to user {user_id}: {e}")
             await send_and_delete_message(context, source_chat_id, "❌ File not found or could not be sent.")
-    except Exception as e:
-        logger.error(f"An unexpected error occurred while sending the file: {e}")
+    except Exception:
+        logger.exception(f"An unexpected error occurred in send_file_task for user {user_id}")
         await send_and_delete_message(context, source_chat_id, "❌ An unexpected error occurred. Please try again later.")
 
 
@@ -445,21 +451,26 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
                 from_chat_id=file["channel_id"],
                 message_id=file["file_id"],
             )
-            if sent_message.caption and sent_message.caption.strip():
-                new_caption = f'<a href="https://t.me/filestore4u">{html.escape(sent_message.caption)}</a>'
+            caption_text = sent_message.caption.strip() if sent_message.caption else file.get("file_name", "")
+            if caption_text:
+                final_caption_text = caption_text
+                while True:
+                    new_caption = f'<a href="https://t.me/filestore4u">{html.escape(final_caption_text)}</a>'
+                    if len(new_caption.encode('utf-8')) <= 1024:
+                        break
+                    final_caption_text = final_caption_text[:-1]
+                    if not final_caption_text:
+                        new_caption = '<a href="https://t.me/filestore4u">Download File</a>'
+                        break
                 try:
-                    if len(new_caption.encode('utf-8')) > 1024:
-                        logger.warning(f"New caption for message {sent_message.message_id} in batch is too long. Skipping link.")
-                    else:
-                        await context.bot.edit_message_caption(
-                            chat_id=user_id,
-                            message_id=sent_message.message_id,
-                            caption=new_caption,
-                            parse_mode="HTML"
-                        )
+                    await context.bot.edit_message_caption(
+                        chat_id=user_id,
+                        message_id=sent_message.message_id,
+                        caption=new_caption,
+                        parse_mode="HTML"
+                    )
                 except TelegramError as e:
                     logger.warning(f"Could not edit caption for message {sent_message.message_id} in batch. Error: {e}")
-
             sent_messages.append(sent_message.message_id)
             await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
             await asyncio.sleep(0.5)
@@ -486,8 +497,8 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
         else:
             logger.error(f"Failed to send one or more files to user {user_id}: {e}")
             await send_and_delete_message(context, source_chat_id, "❌ One or more files could not be sent.")
-    except Exception as e:
-        logger.error(f"An unexpected error occurred while sending all files: {e}")
+    except Exception:
+        logger.exception(f"An unexpected error occurred in send_all_files_task for user {user_id}")
         await send_and_delete_message(context, source_chat_id, "❌ An unexpected error occurred. Please try again later.")
 
 # ========================
