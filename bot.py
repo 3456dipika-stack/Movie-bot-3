@@ -622,6 +622,12 @@ async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await save_user_info(update.effective_user)
+    if not await check_member_status(update.effective_user.id, context):
+        buttons = [[InlineKeyboardButton(f"Join {ch['name']}", url=ch['link'])] for ch in PROMO_CHANNELS]
+        keyboard = InlineKeyboardMarkup(buttons)
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
+        return
+
     user_id = update.effective_user.id
     await send_and_delete_message(context, update.effective_chat.id, "⏳ Fetching a random file for you...")
 
@@ -1976,15 +1982,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await save_user_info(update.effective_user)
-    if not await check_member_status(update.effective_user.id, context):
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Join Channel: @filestore4u", url="https://t.me/filestore4u")],
-            [InlineKeyboardButton("Join Channel: @code_boost", url="https://t.me/code_boost")],
-            [InlineKeyboardButton("Join Channel: @krbook_official", url="https://t.me/krbook_official")]
-        ])
-        await send_and_delete_message(context, query.message.chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
-        return
-
     data = query.data
     user_id = query.from_user.id
 
