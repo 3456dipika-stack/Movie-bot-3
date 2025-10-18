@@ -1947,59 +1947,57 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     user_id = query.from_user.id
 
-    # --- File Request Logic (get_ or sendall_) ---
-    if data.startswith("get_") or data.startswith("sendall_"):
-        if data.startswith("get_"):
-            file_id_str = data.split("_", 1)[1]
-            file_data = None
-            for uri in MONGO_URIS:
-                client = mongo_clients.get(uri)
-                if not client:
-                    continue
-                try:
-                    temp_db = client["telegram_files"]
-                    temp_files_col = temp_db["files"]
-                    file_data = temp_files_col.find_one({"_id": ObjectId(file_id_str)})
-                    if file_data: break
-                except Exception as e:
-                    logger.error(f"DB Error while fetching file {file_id_str} for verified user: {e}")
-
-            if file_data:
-                try:
-                    await send_file_task(user_id, query.message.chat.id, context, file_data, query.from_user.mention_html())
-                except TelegramError as e:
-                    if "Forbidden: bot can't initiate conversation with a user" in e.message:
-                        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Start Bot", url=f"https://t.me/{context.bot.username}?start=start")]])
-                        await query.message.reply_text("You must start me in a private chat first!", reply_markup=keyboard)
-                    else:
-                        logger.error(f"Error sending file in button_handler: {e}")
-                        await query.message.reply_text("❌ An error occurred while trying to send the file.")
-            else:
-                await send_and_delete_message(context, user_id, "❌ File not found.")
-
-        # --- Send All Files (Batch) ---
-        elif data.startswith("sendall_"):
-            _, page_str, search_query = data.split("_", 2)
-            page = int(page_str)
-            final_results = context.user_data.get('search_results')
-            if not final_results:
-                await send_and_delete_message(context, user_id, "❌ Search session expired. Please search again.")
-                return
-            files_to_send = final_results[page * 10:(page + 1) * 10]
-            if not files_to_send:
-                await send_and_delete_message(context, user_id, "❌ No files found on this page to send.")
-                return
-
+    # --- File Request, Pagination, and Other Button Logic ---
+    if data.startswith("get_"):
+        file_id_str = data.split("_", 1)[1]
+        file_data = None
+        for uri in MONGO_URIS:
+            client = mongo_clients.get(uri)
+            if not client:
+                continue
             try:
-                await send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html())
+                temp_db = client["telegram_files"]
+                temp_files_col = temp_db["files"]
+                file_data = temp_files_col.find_one({"_id": ObjectId(file_id_str)})
+                if file_data: break
+            except Exception as e:
+                logger.error(f"DB Error while fetching file {file_id_str} for verified user: {e}")
+
+        if file_data:
+            try:
+                await send_file_task(user_id, query.message.chat.id, context, file_data, query.from_user.mention_html())
             except TelegramError as e:
                 if "Forbidden: bot can't initiate conversation with a user" in e.message:
                     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Start Bot", url=f"https://t.me/{context.bot.username}?start=start")]])
                     await query.message.reply_text("You must start me in a private chat first!", reply_markup=keyboard)
                 else:
-                    logger.error(f"Error sending files in button_handler: {e}")
-                    await query.message.reply_text("❌ An error occurred while trying to send the files.")
-        return
+                    logger.error(f"Error sending file in button_handler: {e}")
+                    await query.message.reply_text("❌ An error occurred while trying to send the file.")
+        else:
+            await send_and_delete_message(context, user_id, "❌ File not found.")
+
+    # --- Send All Files (Batch) ---
+    elif data.startswith("sendall_"):
+        _, page_str, search_query = data.split("_", 2)
+        page = int(page_str)
+        final_results = context.user_data.get('search_results')
+        if not final_results:
+            await send_and_delete_message(context, user_id, "❌ Search session expired. Please search again.")
+            return
+        files_to_send = final_results[page * 10:(page + 1) * 10]
+        if not files_to_send:
+            await send_and_delete_message(context, user_id, "❌ No files found on this page to send.")
+            return
+
+        try:
+            await send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html())
+        except TelegramError as e:
+            if "Forbidden: bot can't initiate conversation with a user" in e.message:
+                keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Start Bot", url=f"https://t.me/{context.bot.username}?start=start")]])
+                await query.message.reply_text("You must start me in a private chat first!", reply_markup=keyboard)
+            else:
+                logger.error(f"Error sending files in button_handler: {e}")
+                await query.message.reply_text("❌ An error occurred while trying to send the files.")
 
     # --- Other Button Logic (Pagination, Start Menu, etc.) ---
     elif data.startswith("page_"):
