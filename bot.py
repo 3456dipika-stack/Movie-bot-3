@@ -97,10 +97,6 @@ MONGO_URIS = [
     "mongodb+srv://28c2kqa_db_user:IL51mem7W6g37mA5@cluster0.np0ffl0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
 ]
 GROUPS_DB_URIS = ["mongodb+srv://6p5e2y8_db_user:MxRFLhQ534AI3rfQ@cluster0.j9hcylx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
-
-
-
-
 REFERRAL_DB_URI = "mongodb+srv://qy8gjiw_db_user:JjryWhQV4CYtzcYo@cluster0.lkkvli8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 current_uri_index = 0
 
@@ -648,18 +644,23 @@ async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_and_delete_message(context, update.effective_chat.id, "❌ Could not find a random file. The database might be empty.")
     else:
         # Start the new "join for reward" flow for a random file
+        await update.message.reply_text("Please check your private messages to continue.")
         promo_link_data = await get_random_promo_link()
         if promo_link_data:
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"Join {promo_link_data['channel_name']} to get your file!", url=promo_link_data['channel_link'])],
-                [InlineKeyboardButton("I have Joined! ✅", callback_data=f"join_get_random_{promo_link_data['channel_id']}")]
+                [InlineKeyboardButton(f"Join {promo_link_data['name']} to get your reward!", url=promo_link_data['link'])],
+                [InlineKeyboardButton("I have Joined! ✅", callback_data=f"join_get_random_{promo_link_data['id']}")]
             ])
-            await send_and_delete_message(
-                context,
-                update.effective_chat.id,
-                "🎁 **Join our channel to get your reward!**\n\nClick the button below to join the channel, then click 'I have Joined!' to receive your file.",
-                reply_markup=keyboard
-            )
+            try:
+                await send_and_delete_message(
+                    context,
+                    user_id, # Send to the user's private chat
+                    "🎁 **Join our channel to get your reward!**\n\nClick the button below to join the channel, then click 'I have Joined!' to receive your file.",
+                    reply_markup=keyboard
+                )
+            except TelegramError as e:
+                logger.error(f"Failed to send 'Join for Reward' message to user {user_id} for /rand: {e}")
+                await update.message.reply_text(f"❌ {update.effective_user.mention_html()}, I could not send you a message. Please unblock me and try again.", parse_mode="HTML")
         else:
             await send_and_delete_message(context, update.effective_chat.id, "❌ Could not find a promotional channel. Please contact an admin.")
 
@@ -2060,22 +2061,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # --- Start "Join for Reward" flow for non-premium users ---
         else:
+            await query.answer("Please check your private messages to continue.", show_alert=True)
             promo_link_data = await get_random_promo_link()
             if promo_link_data:
                 # The 'data' variable already contains the file request (e.g., "get_...")
                 # We pass it directly to the 'join' callback
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton(f"Join {promo_link_data['channel_name']} to get your reward!", url=promo_link_data['channel_link'])],
+                    [InlineKeyboardButton(f"Join {promo_link_data['name']} to get your reward!", url=promo_link_data['link'])],
                     [InlineKeyboardButton("I have Joined! ✅", callback_data=f"join_{data}_{promo_link_data['channel_id']}")]
                 ])
-                await send_and_delete_message(
-                    context,
-                    query.message.chat.id,
-                    "🎁 **Join our channel to get your reward!**\n\nClick the button below to join the channel, then click 'I have Joined!' to receive your file.",
-                    reply_markup=keyboard
-                )
+                try:
+                    await send_and_delete_message(
+                        context,
+                        user_id, # Send to the user's private chat
+                        "🎁 **Join our channel to get your reward!**\n\nClick the button below to join the channel, then click 'I have Joined!' to receive your file.",
+                        reply_markup=keyboard
+                    )
+                except TelegramError as e:
+                    logger.error(f"Failed to send 'Join for Reward' message to user {user_id}: {e}")
+                    # Inform the user in the group if the PM fails (e.g., bot is blocked)
+                    await query.message.reply_text(f"❌ {query.from_user.mention_html()}, I could not send you a message. Please unblock me and try again.", parse_mode="HTML")
             else:
-                await send_and_delete_message(context, query.message.chat.id, "❌ Could not find a promotional channel. Please contact an admin.")
+                await query.message.reply_text("❌ Could not find a promotional channel. Please contact an admin.")
         return
 
     # --- Join for Reward Logic ---
