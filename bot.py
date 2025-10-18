@@ -394,34 +394,32 @@ async def react_to_message_task(update: Update):
 async def send_file_task(user_id: int, source_chat_id: int, context: ContextTypes.DEFAULT_TYPE, file_data: dict, user_mention: str):
     """Background task to send a single file to the user's private chat and auto-delete it."""
     try:
+        caption_text = file_data.get("file_name", "").strip()
+        if not caption_text:
+            caption_text = "Download File"
+
+        final_caption_text = caption_text
+        new_caption = ""
+        while True:
+            temp_caption = f'<a href="https://t.me/filestore4u">{html.escape(final_caption_text)}</a>'
+            if len(temp_caption.encode('utf-8')) <= 1024:
+                new_caption = temp_caption
+                break
+            final_caption_text = final_caption_text[:-1]
+            if not final_caption_text:
+                new_caption = '<a href="https://t.me/filestore4u">Download File</a>'
+                break
+
+        logger.info(f"Attempting to send file with caption: {new_caption}")
         sent_message = await context.bot.copy_message(
             chat_id=user_id,
             from_chat_id=file_data["channel_id"],
             message_id=file_data["file_id"],
+            caption=new_caption,
+            parse_mode="HTML"
         )
 
         if sent_message:
-            caption_text = sent_message.caption.strip() if sent_message.caption else file_data.get("file_name", "")
-            if caption_text:
-                final_caption_text = caption_text
-                while True:
-                    new_caption = f'<a href="https://t.me/filestore4u">{html.escape(final_caption_text)}</a>'
-                    if len(new_caption.encode('utf-8')) <= 1024:
-                        break
-                    final_caption_text = final_caption_text[:-1]
-                    if not final_caption_text:
-                        new_caption = '<a href="https://t.me/filestore4u">Download File</a>'
-                        break
-                try:
-                    await context.bot.edit_message_caption(
-                        chat_id=user_id,
-                        message_id=sent_message.message_id,
-                        caption=new_caption,
-                        parse_mode="HTML"
-                    )
-                except TelegramError as e:
-                    logger.warning(f"Could not edit caption for message {sent_message.message_id}. Error: {e}")
-
             await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
             confirmation_text = f"✅ {user_mention}, I have sent the file to you in a private message. It will be deleted automatically in 5 minutes."
             await send_and_delete_message(context, source_chat_id, confirmation_text, parse_mode="HTML")
@@ -446,31 +444,30 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
     sent_messages = []
     try:
         for file in file_list:
+            caption_text = file.get("file_name", "").strip()
+            if not caption_text:
+                caption_text = "Download File"
+
+            final_caption_text = caption_text
+            new_caption = ""
+            while True:
+                temp_caption = f'<a href="https://t.me/filestore4u">{html.escape(final_caption_text)}</a>'
+                if len(temp_caption.encode('utf-8')) <= 1024:
+                    new_caption = temp_caption
+                    break
+                final_caption_text = final_caption_text[:-1]
+                if not final_caption_text:
+                    new_caption = '<a href="https://t.me/filestore4u">Download File</a>'
+                    break
+
+            logger.info(f"Attempting to send file in batch with caption: {new_caption}")
             sent_message = await context.bot.copy_message(
                 chat_id=user_id,
                 from_chat_id=file["channel_id"],
                 message_id=file["file_id"],
+                caption=new_caption,
+                parse_mode="HTML"
             )
-            caption_text = sent_message.caption.strip() if sent_message.caption else file.get("file_name", "")
-            if caption_text:
-                final_caption_text = caption_text
-                while True:
-                    new_caption = f'<a href="https://t.me/filestore4u">{html.escape(final_caption_text)}</a>'
-                    if len(new_caption.encode('utf-8')) <= 1024:
-                        break
-                    final_caption_text = final_caption_text[:-1]
-                    if not final_caption_text:
-                        new_caption = '<a href="https://t.me/filestore4u">Download File</a>'
-                        break
-                try:
-                    await context.bot.edit_message_caption(
-                        chat_id=user_id,
-                        message_id=sent_message.message_id,
-                        caption=new_caption,
-                        parse_mode="HTML"
-                    )
-                except TelegramError as e:
-                    logger.warning(f"Could not edit caption for message {sent_message.message_id} in batch. Error: {e}")
             sent_messages.append(sent_message.message_id)
             await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
             await asyncio.sleep(0.5)
