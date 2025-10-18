@@ -47,11 +47,6 @@ PM_SEARCH_ENABLED = False   # Controls whether non-admins can search in PM
 
 # Custom promotional message (Simplified as per the last request)
 REACTIONS = ["👀", "😱", "🔥", "😍", "🎉", "🥰", "😇", "⚡"]
-PROMO_CHANNELS = [
-    {"name": "@filestore4u", "link": "https://t.me/filestore4u", "id": -1002692055617},
-    {"name": "@freemovie5u", "link": "https://t.me/freemovie5u", "id": -1002551875503},
-    {"name": "@KRBOOK_official", "link": "https://t.me/KRBOOK_official", "id": -1002839913869},
-]
 CUSTOM_PROMO_MESSAGE = (
     "Credit to Prince Kaustav Ray\n\n"
     "Join our main channel: @filestore4u\n"
@@ -264,24 +259,6 @@ async def bot_can_respond(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return False
 
     return False
-
-async def get_random_promo_link():
-    """Selects a random promotional channel from the hardcoded list."""
-    return random.choice(PROMO_CHANNELS)
-
-async def is_user_premium(user_id: int):
-    """Checks if a user has an active premium subscription via the referral system."""
-    if referrals_col is not None:
-        try:
-            user_referral_data = referrals_col.find_one({"_id": user_id})
-            # The TTL index handles expiry, so just checking for existence is enough.
-            if user_referral_data and "premium_until" in user_referral_data:
-                logger.info(f"User {user_id} has premium access.")
-                return True
-        except Exception as e:
-            logger.error(f"Failed to check premium status for user {user_id}: {e}")
-    return False
-
 
 async def send_and_delete_message(
     context: ContextTypes.DEFAULT_TYPE,
@@ -631,38 +608,14 @@ async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
-    is_premium = await is_user_premium(user_id)
+    await send_and_delete_message(context, update.effective_chat.id, "⏳ Fetching a random file for you...")
 
-    if user_id in ADMINS or is_premium:
-        await send_and_delete_message(context, update.effective_chat.id, "⏳ Fetching a random file for you...")
+    file_data = await get_random_file_from_db()
 
-        file_data = await get_random_file_from_db()
-
-        if file_data:
-            asyncio.create_task(send_file_task(user_id, update.effective_chat.id, context, file_data, update.effective_user.mention_html()))
-        else:
-            await send_and_delete_message(context, update.effective_chat.id, "❌ Could not find a random file. The database might be empty.")
+    if file_data:
+        asyncio.create_task(send_file_task(user_id, update.effective_chat.id, context, file_data, update.effective_user.mention_html()))
     else:
-        # Start the new "join for reward" flow for a random file
-        await update.message.reply_text("Please check your private messages to continue.")
-        promo_link_data = await get_random_promo_link()
-        if promo_link_data:
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"Join {promo_link_data['name']} to get your reward!", url=promo_link_data['link'])],
-                [InlineKeyboardButton("I have Joined! ✅", callback_data=f"join_get_random_{promo_link_data['id']}")]
-            ])
-            try:
-                await send_and_delete_message(
-                    context,
-                    user_id, # Send to the user's private chat
-                    "🎁 **Join our channel to get your reward!**\n\nClick the button below to join the channel, then click 'I have Joined!' to receive your file.",
-                    reply_markup=keyboard
-                )
-            except TelegramError as e:
-                logger.error(f"Failed to send 'Join for Reward' message to user {user_id} for /rand: {e}")
-                await update.message.reply_text(f"❌ {update.effective_user.mention_html()}, I could not send you a message. Please unblock me and try again.", parse_mode="HTML")
-        else:
-            await send_and_delete_message(context, update.effective_chat.id, "❌ Could not find a promotional channel. Please contact an admin.")
+        await send_and_delete_message(context, update.effective_chat.id, "❌ Could not find a random file. The database might be empty.")
 
 
 async def refer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2013,137 +1966,43 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- File Request Logic (get_ or sendall_) ---
     if data.startswith("get_") or data.startswith("sendall_"):
-        is_premium = await is_user_premium(user_id)
-
-        # Admins and premium users get files directly
-        if user_id in ADMINS or is_premium:
-            if user_id in ADMINS:
-                await send_and_delete_message(context, query.message.chat.id, "⌛ Processing your request as an admin...")
-            else:
-                 await send_and_delete_message(context, query.message.chat.id, "✅ You have premium access. Sending your file(s)...")
-
-            # --- Send Single File ---
-            if data.startswith("get_"):
-                file_id_str = data.split("_", 1)[1]
-                file_data = None
-                for uri in MONGO_URIS:
-                    client = mongo_clients.get(uri)
-                    if not client:
-                        continue
-                    try:
-                        temp_db = client["telegram_files"]
-                        temp_files_col = temp_db["files"]
-                        file_data = temp_files_col.find_one({"_id": ObjectId(file_id_str)})
-                        if file_data: break
-                    except Exception as e:
-                        logger.error(f"DB Error while fetching file {file_id_str} for premium user: {e}")
-
-                if file_data:
-                    asyncio.create_task(send_file_task(user_id, query.message.chat.id, context, file_data, query.from_user.mention_html()))
-                else:
-                    await send_and_delete_message(context, user_id, "❌ File not found.")
-
-            # --- Send All Files (Batch) ---
-            elif data.startswith("sendall_"):
-                _, page_str, search_query = data.split("_", 2)
-                page = int(page_str)
-                final_results = context.user_data.get('search_results')
-                if not final_results:
-                    await send_and_delete_message(context, user_id, "❌ Search session expired. Please search again.")
-                    return
-                files_to_send = final_results[page * 10:(page + 1) * 10]
-                if not files_to_send:
-                    await send_and_delete_message(context, user_id, "❌ No files found on this page to send.")
-                    return
-
-                asyncio.create_task(send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html()))
-            return
-
-        # --- Start "Join for Reward" flow for non-premium users ---
-        else:
-            await query.answer("Please check your private messages to continue.", show_alert=True)
-            promo_link_data = await get_random_promo_link()
-            if promo_link_data:
-                # The 'data' variable already contains the file request (e.g., "get_...")
-                # We pass it directly to the 'join' callback
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton(f"Join {promo_link_data['name']} to get your reward!", url=promo_link_data['link'])],
-                    [InlineKeyboardButton("I have Joined! ✅", callback_data=f"join_{data}_{promo_link_data['channel_id']}")]
-                ])
+        # --- Send Single File ---
+        if data.startswith("get_"):
+            file_id_str = data.split("_", 1)[1]
+            file_data = None
+            for uri in MONGO_URIS:
+                client = mongo_clients.get(uri)
+                if not client:
+                    continue
                 try:
-                    await send_and_delete_message(
-                        context,
-                        user_id, # Send to the user's private chat
-                        "🎁 **Join our channel to get your reward!**\n\nClick the button below to join the channel, then click 'I have Joined!' to receive your file.",
-                        reply_markup=keyboard
-                    )
-                except TelegramError as e:
-                    logger.error(f"Failed to send 'Join for Reward' message to user {user_id}: {e}")
-                    # Inform the user in the group if the PM fails (e.g., bot is blocked)
-                    await query.message.reply_text(f"❌ {query.from_user.mention_html()}, I could not send you a message. Please unblock me and try again.", parse_mode="HTML")
+                    temp_db = client["telegram_files"]
+                    temp_files_col = temp_db["files"]
+                    file_data = temp_files_col.find_one({"_id": ObjectId(file_id_str)})
+                    if file_data: break
+                except Exception as e:
+                    logger.error(f"DB Error while fetching file {file_id_str}: {e}")
+
+            if file_data:
+                asyncio.create_task(send_file_task(user_id, query.message.chat.id, context, file_data, query.from_user.mention_html()))
             else:
-                await query.message.reply_text("❌ Could not find a promotional channel. Please contact an admin.")
+                await send_and_delete_message(context, user_id, "❌ File not found.")
+
+        # --- Send All Files (Batch) ---
+        elif data.startswith("sendall_"):
+            _, page_str, search_query = data.split("_", 2)
+            page = int(page_str)
+            final_results = context.user_data.get('search_results')
+            if not final_results:
+                await send_and_delete_message(context, user_id, "❌ Search session expired. Please search again.")
+                return
+            files_to_send = final_results[page * 10:(page + 1) * 10]
+            if not files_to_send:
+                await send_and_delete_message(context, user_id, "❌ No files found on this page to send.")
+                return
+
+            asyncio.create_task(send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html()))
         return
 
-    # --- Join for Reward Logic ---
-    elif data.startswith("join_"):
-        # The format is join_{original_callback_data}_{channel_id}
-        parts = data.split("_")
-        channel_id_str = parts[-1]
-        original_callback_data = "_".join(parts[1:-1])
-        channel_id = int(channel_id_str)
-
-        try:
-            member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
-            is_member = member.status in ["member", "administrator", "creator"]
-        except TelegramError as e:
-            logger.error(f"Error checking member status for user {user_id} in channel {channel_id}: {e}")
-            is_member = False
-
-        if is_member:
-            await query.answer("✅ Thank you for joining! Sending your reward...", show_alert=True)
-
-            # --- Send Single File ---
-            if original_callback_data.startswith("get_"):
-                file_id_str = original_callback_data.split("_", 1)[1]
-
-                if file_id_str == 'random':
-                    file_data = await get_random_file_from_db()
-                else:
-                    file_data = None
-                    for uri in MONGO_URIS:
-                        client = mongo_clients.get(uri)
-                        if not client:
-                            continue
-                        try:
-                            temp_db = client["telegram_files"]
-                            temp_files_col = temp_db["files"]
-                            file_data = temp_files_col.find_one({"_id": ObjectId(file_id_str)})
-                            if file_data: break
-                        except Exception as e:
-                            logger.error(f"DB Error while fetching file {file_id_str} after join: {e}")
-
-                if file_data:
-                    asyncio.create_task(send_file_task(user_id, query.message.chat.id, context, file_data, query.from_user.mention_html()))
-                else:
-                    await send_and_delete_message(context, user_id, "❌ File not found.")
-
-            # --- Send All Files (Batch) ---
-            elif original_callback_data.startswith("sendall_"):
-                _, page_str, search_query = original_callback_data.split("_", 2)
-                page = int(page_str)
-                final_results = context.user_data.get('search_results')
-                if not final_results:
-                    await send_and_delete_message(context, user_id, "❌ Search session expired. Please search again.")
-                else:
-                    files_to_send = final_results[page * 10:(page + 1) * 10]
-                    if not files_to_send:
-                        await send_and_delete_message(context, user_id, "❌ No files found on this page to send.")
-                    else:
-                        asyncio.create_task(send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html()))
-        else:
-            await query.answer("❌ You haven't joined the channel yet. Please join to get your file.", show_alert=True)
-        return
 
     # --- Admin Indexing Approval (REMOVED, now handled by /done and /cancel commands) ---
 
