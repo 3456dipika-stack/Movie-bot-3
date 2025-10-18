@@ -82,7 +82,6 @@ HELP_TEXT = (
     "• `/broadcast <msg>` - Send a message to all users.\n"
     "• `/grp_broadcast <msg>` - Send a message to all connected groups where the bot is an admin.\n"
         "• `/index_channel <channel_id> [skip]` - Index files from a channel.\n"
-        "• `/addlinkshort <api_url> <api_key>` - Set the link shortener details.\n"
     "• Send a file to me in a private message to index it."
 )
 
@@ -401,16 +400,20 @@ async def send_file_task(user_id: int, source_chat_id: int, context: ContextType
         )
 
         if sent_message:
-            if sent_message.caption:
+            if sent_message.caption and sent_message.caption.strip():
+                new_caption = f'<a href="https://t.me/filestore4u">{html.escape(sent_message.caption)}</a>'
                 try:
-                    await context.bot.edit_message_caption(
-                        chat_id=user_id,
-                        message_id=sent_message.message_id,
-                        caption=f'<a href="https://t.me/filestore4u">{html.escape(sent_message.caption)}</a>',
-                        parse_mode="HTML"
-                    )
+                    if len(new_caption.encode('utf-8')) > 1024:
+                        logger.warning(f"New caption for message {sent_message.message_id} is too long. Skipping link.")
+                    else:
+                        await context.bot.edit_message_caption(
+                            chat_id=user_id,
+                            message_id=sent_message.message_id,
+                            caption=new_caption,
+                            parse_mode="HTML"
+                        )
                 except TelegramError as e:
-                    logger.warning(f"Could not edit caption for message {sent_message.message_id}: {e}")
+                    logger.warning(f"Could not edit caption for message {sent_message.message_id}. Error: {e}")
 
             await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
             confirmation_text = f"✅ {user_mention}, I have sent the file to you in a private message. It will be deleted automatically in 5 minutes."
@@ -438,16 +441,20 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
                 from_chat_id=file["channel_id"],
                 message_id=file["file_id"],
             )
-            if sent_message.caption:
+            if sent_message.caption and sent_message.caption.strip():
+                new_caption = f'<a href="https.://t.me/filestore4u">{html.escape(sent_message.caption)}</a>'
                 try:
-                    await context.bot.edit_message_caption(
-                        chat_id=user_id,
-                        message_id=sent_message.message_id,
-                        caption=f'<a href="https://t.me/filestore4u">{html.escape(sent_message.caption)}</a>',
-                        parse_mode="HTML"
-                    )
+                    if len(new_caption.encode('utf-8')) > 1024:
+                        logger.warning(f"New caption for message {sent_message.message_id} in batch is too long. Skipping link.")
+                    else:
+                        await context.bot.edit_message_caption(
+                            chat_id=user_id,
+                            message_id=sent_message.message_id,
+                            caption=new_caption,
+                            parse_mode="HTML"
+                        )
                 except TelegramError as e:
-                    logger.warning(f"Could not edit caption for message {sent_message.message_id} in batch: {e}")
+                    logger.warning(f"Could not edit caption for message {sent_message.message_id} in batch. Error: {e}")
 
             sent_messages.append(sent_message.message_id)
             await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
@@ -1303,82 +1310,6 @@ async def grp_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TY
     await send_and_delete_message(context, update.effective_chat.id, f"✅ Group broadcast complete!\n\nSent to: {sent_count} groups\nFailed: {failed_count} groups")
 
 
-async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to approve and index a user-submitted file."""
-    asyncio.create_task(react_to_message_task(update))
-    user = update.effective_user
-    if user.id not in ADMINS:
-        return # Silently ignore from non-admins
-
-    replied_message = update.message.reply_to_message
-    if not replied_message or not (replied_message.document or replied_message.video or replied_message.audio):
-        await send_and_delete_message(context, update.effective_chat.id, "❌ You must reply to a file message to use this command.")
-        return
-
-    # The replied message is the one to be indexed.
-    try:
-        forwarded_message = await replied_message.forward(DB_CHANNEL)
-
-        file = forwarded_message.document or forwarded_message.video or forwarded_message.audio
-        if file:
-            if forwarded_message.caption:
-                raw_name = forwarded_message.caption
-            else:
-                raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
-
-            clean_name = raw_name.replace("_", " ").replace(".", " ").replace("-", " ") if raw_name else "Unknown"
-
-            saved = False
-            for i in range(len(MONGO_URIS)):
-                idx = (current_uri_index + i) % len(MONGO_URIS)
-                uri_to_try = MONGO_URIS[idx]
-                client = mongo_clients.get(uri_to_try)
-                if not client: continue
-                try:
-                    temp_db = client["telegram_files"]
-                    temp_files_col = temp_db["files"]
-                    temp_files_col.insert_one({
-                        "file_name": clean_name,
-                        "file_id": forwarded_message.message_id,
-                        "channel_id": DB_CHANNEL,
-                        "file_size": file.file_size,
-                    })
-                    saved = True
-                    break
-                except Exception as e:
-                    logger.error(f"DB Error while indexing from /done command: {e}")
-
-            if saved:
-                await send_and_delete_message(context, update.effective_chat.id, f"✅ **Indexed:** {clean_name}")
-            else:
-                await send_and_delete_message(context, update.effective_chat.id, "❌ **Failed:** Could not save the file to any database.")
-        else:
-            await send_and_delete_message(context, update.effective_chat.id, "❌ **Failed:** The replied message does not contain a valid file.")
-    except Exception as e:
-        logger.error(f"Error during /done command: {e}")
-        await send_and_delete_message(context, update.effective_chat.id, f"❌ **Error:** An unexpected error occurred.\n`{e}`")
-
-async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to reject a user-submitted file."""
-    asyncio.create_task(react_to_message_task(update))
-    user = update.effective_user
-    if user.id not in ADMINS:
-        return # Silently ignore from non-admins
-
-    replied_message = update.message.reply_to_message
-    if not replied_message:
-        await send_and_delete_message(context, update.effective_chat.id, "❌ You must reply to a message to use this command.")
-        return
-
-    try:
-        await replied_message.delete()
-        await update.message.delete()
-    except TelegramError as e:
-        logger.warning(f"Could not delete messages on /cancel: {e}")
-
-    await send_and_delete_message(context, update.effective_chat.id, "❌ Request cancelled.")
-
-
 async def index_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to index files from a given channel."""
     asyncio.create_task(react_to_message_task(update))
@@ -1428,8 +1359,6 @@ async def pm_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     PM_SEARCH_ENABLED = False
     await send_and_delete_message(context, update.effective_chat.id, "✅ Private message search has been disabled for all users.")
-
-
 
 
 async def index_channel_task(context: ContextTypes.DEFAULT_TYPE, channel_id: int, skip: int, user_chat_id: int):
@@ -1726,6 +1655,7 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await save_user_info(update.effective_user)
     if not await check_member_status(update.effective_user.id, context):
+        # NEW: Updated to show buttons for all channels
         buttons = [[InlineKeyboardButton(f"Join {ch['name']}", url=ch['link'])] for ch in PROMO_CHANNELS]
         keyboard = InlineKeyboardMarkup(buttons)
         await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
@@ -1944,10 +1874,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await save_user_info(update.effective_user)
+    if not await check_member_status(update.effective_user.id, context):
+        buttons = [[InlineKeyboardButton(f"Join {ch['name']}", url=ch['link'])] for ch in PROMO_CHANNELS]
+        keyboard = InlineKeyboardMarkup(buttons)
+        await send_and_delete_message(context, query.message.chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
+        return
+
     data = query.data
     user_id = query.from_user.id
 
-    # --- File Request, Pagination, and Other Button Logic ---
+    # --- File Request Logic (get_ or sendall_) ---
     if data.startswith("get_"):
         file_id_str = data.split("_", 1)[1]
         file_data = None
@@ -1965,7 +1901,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if file_data:
             try:
-                await send_file_task(user_id, query.message.chat.id, context, file_data, query.from_user.mention_html())
+                asyncio.create_task(send_file_task(user_id, query.message.chat.id, context, file_data, query.from_user.mention_html()))
             except TelegramError as e:
                 if "Forbidden: bot can't initiate conversation with a user" in e.message:
                     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Start Bot", url=f"https://t.me/{context.bot.username}?start=start")]])
@@ -1990,7 +1926,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         try:
-            await send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html())
+            asyncio.create_task(send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html()))
         except TelegramError as e:
             if "Forbidden: bot can't initiate conversation with a user" in e.message:
                 keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Start Bot", url=f"https://t.me/{context.bot.username}?start=start")]])
@@ -2067,7 +2003,6 @@ async def main_async():
     server.start()
     logger.info("Web server started in a background thread.")
     ptb_app.bot_data["server"] = server
-
 
     # Create TTL index for premium users (expires at the time specified in the 'premium_until' field)
     if referrals_col is not None:
