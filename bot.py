@@ -1933,43 +1933,8 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
         logger.error(f"Error sending or editing search results page: {e}")
 
 
-async def start_verification_process(context: ContextTypes.DEFAULT_TYPE, user_id: int, user_mention: str, source_chat_id: int, original_request: dict):
-    """
-    Starts the 3-step verification process for a user.
-    `original_request` should contain the file request details.
-    """
-    verification_id = str(uuid.uuid4())
-    progress_data = {
-        "_id": verification_id,
-        "user_id": user_id,
-        "step": 1,
-        "original_request": original_request
-    }
-
-    if await save_verification_progress(progress_data):
-        bot_username = context.bot.username
-        deep_link = f"https://t.me/{bot_username}?start={verification_id}"
-
-        shortened_link = await get_shortened_link(deep_link)
-
-        if "Error:" in shortened_link:
-            await send_and_delete_message(context, user_id, shortened_link)
-        else:
-            # Send the first link to the user's private chat
-            await send_and_delete_message(
-                context,
-                user_id,
-                f"Please complete the 3-step verification to get 24-hour access to all files.\n\n"
-                f"Step 1 of 3: Open this link to continue:\n{shortened_link}"
-            )
-            # Notify in group if the request came from a group
-            if source_chat_id != user_id:
-                 await send_and_delete_message(context, source_chat_id, f"✅ {user_mention}, At first you should start me in private chat. Then please complete the verification in my private chat to get your file.", parse_mode="HTML")
-    else:
-        await send_and_delete_message(context, user_id, "❌ Could not start the verification process. Please try again later.")
-
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle button clicks with new verification flow."""
+    """Handle button clicks."""
     asyncio.create_task(react_to_message_task(update))
     query = update.callback_query
     await query.answer()
@@ -1984,32 +1949,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- File Request Logic (get_ or sendall_) ---
     if data.startswith("get_") or data.startswith("sendall_"):
-        is_verified = await is_user_verified(user_id)
+        if data.startswith("get_"):
+            file_id_str = data.split("_", 1)[1]
+            file_data = None
+            for uri in MONGO_URIS:
+                client = mongo_clients.get(uri)
+                if not client:
+                    continue
+                try:
+                    temp_db = client["telegram_files"]
+                    temp_files_col = temp_db["files"]
+                    file_data = temp_files_col.find_one({"_id": ObjectId(file_id_str)})
+                    if file_data: break
+                except Exception as e:
+                    logger.error(f"DB Error while fetching file {file_id_str} for verified user: {e}")
 
-        # Admins and already verified users get files directly
-        if user_id in ADMINS or is_verified:
-            if user_id in ADMINS:
-                await send_and_delete_message(context, query.message.chat.id, "⌛ Processing your request as an admin...")
-            else:
-                 await send_and_delete_message(context, query.message.chat.id, "✅ You are already verified. Sending your file(s)...")
-
-            # --- Send Single File ---
-            if data.startswith("get_"):
-                file_id_str = data.split("_", 1)[1]
-                file_data = None
-                for uri in MONGO_URIS:
-                    client = mongo_clients.get(uri)
-                    if not client:
-                        continue
-                    try:
-                        temp_db = client["telegram_files"]
-                        temp_files_col = temp_db["files"]
-                        file_data = temp_files_col.find_one({"_id": ObjectId(file_id_str)})
-                        if file_data: break
-                    except Exception as e:
-                        logger.error(f"DB Error while fetching file {file_id_str} for verified user: {e}")
-
-                if file_data:
+            if file_data:
                 try:
                     await send_file_task(user_id, query.message.chat.id, context, file_data, query.from_user.mention_html())
                 except TelegramError as e:
@@ -2019,21 +1974,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     else:
                         logger.error(f"Error sending file in button_handler: {e}")
                         await query.message.reply_text("❌ An error occurred while trying to send the file.")
-                else:
-                    await send_and_delete_message(context, user_id, "❌ File not found.")
+            else:
+                await send_and_delete_message(context, user_id, "❌ File not found.")
 
-            # --- Send All Files (Batch) ---
-            elif data.startswith("sendall_"):
-                _, page_str, search_query = data.split("_", 2)
-                page = int(page_str)
-                final_results = context.user_data.get('search_results')
-                if not final_results:
-                    await send_and_delete_message(context, user_id, "❌ Search session expired. Please search again.")
-                    return
-                files_to_send = final_results[page * 10:(page + 1) * 10]
-                if not files_to_send:
-                    await send_and_delete_message(context, user_id, "❌ No files found on this page to send.")
-                    return
+        # --- Send All Files (Batch) ---
+        elif data.startswith("sendall_"):
+            _, page_str, search_query = data.split("_", 2)
+            page = int(page_str)
+            final_results = context.user_data.get('search_results')
+            if not final_results:
+                await send_and_delete_message(context, user_id, "❌ Search session expired. Please search again.")
+                return
+            files_to_send = final_results[page * 10:(page + 1) * 10]
+            if not files_to_send:
+                await send_and_delete_message(context, user_id, "❌ No files found on this page to send.")
+                return
 
             try:
                 await send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html())
@@ -2044,29 +1999,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     logger.error(f"Error sending files in button_handler: {e}")
                     await query.message.reply_text("❌ An error occurred while trying to send the files.")
-            return
-
-        # --- Start Verification for Non-Admin/Non-Verified Users ---
-        else:
-            original_request = {}
-            if data.startswith("get_"):
-                file_id_str = data.split("_", 1)[1]
-                original_request = {"type": "single", "file_id": file_id_str}
-            elif data.startswith("sendall_"):
-                _, page_str, search_query = data.split("_", 2)
-                page = int(page_str)
-                final_results = context.user_data.get('search_results')
-                if not final_results:
-                    await send_and_delete_message(context, user_id, "❌ Search session expired. Please search again.")
-                    return
-                files_to_send = final_results[page * 10:(page + 1) * 10]
-                if not files_to_send:
-                    await send_and_delete_message(context, user_id, "❌ No files found on this page to send.")
-                    return
-                file_ids = [str(file['_id']) for file in files_to_send]
-                original_request = {"type": "batch", "file_ids": file_ids}
-
-            await start_verification_process(context, user_id, query.from_user.mention_html(), query.message.chat.id, original_request)
         return
 
     # --- Other Button Logic (Pagination, Start Menu, etc.) ---
