@@ -906,6 +906,103 @@ async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start_verification_process(context, user_id, update.effective_user.mention_html(), update.effective_chat.id, original_request)
 
 
+async def request_index_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Allows any user to request a channel to be indexed, or to request a specific file to be indexed by replying to it.
+    """
+    asyncio.create_task(react_to_message_task(update))
+    if not await bot_can_respond(update, context):
+        return
+    if await is_banned(update.effective_user.id):
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You are banned from using this bot.")
+        return
+
+    user = update.effective_user
+    replied_message = update.message.reply_to_message
+
+    # Workflow for replying to a file to request its index
+    if replied_message and (replied_message.document or replied_message.video or replied_message.audio):
+        if ADMINS:
+            primary_admin_id = ADMINS[0]
+            requester_mention = user.mention_html()
+
+            file_to_send = replied_message.document or replied_message.video or replied_message.audio
+
+            try:
+                # Send a new message with the file to the admin, handling different file types
+                if replied_message.document:
+                    sent_file_message = await context.bot.send_document(
+                        chat_id=primary_admin_id,
+                        document=file_to_send.file_id,
+                        caption=replied_message.caption
+                    )
+                elif replied_message.video:
+                    sent_file_message = await context.bot.send_video(
+                        chat_id=primary_admin_id,
+                        video=file_to_send.file_id,
+                        caption=replied_message.caption
+                    )
+                elif replied_message.audio:
+                    sent_file_message = await context.bot.send_audio(
+                        chat_id=primary_admin_id,
+                        audio=file_to_send.file_id,
+                        caption=replied_message.caption
+                    )
+                else:
+                    # Should not happen due to the check above, but as a fallback
+                    await send_and_delete_message(context, update.effective_chat.id, "❌ Unsupported file type for indexing.")
+                    return
+
+                # Now send the approval instructions
+                approval_caption = (
+                    f"**File Index Request**\n\n"
+                    f"**From User:** {requester_mention}\n"
+                    f"**User ID:** `{user.id}`\n\n"
+                    "Reply to the file above with `/done` to index it, or `/cancel` to reject it."
+                )
+
+                await context.bot.send_message(
+                    chat_id=primary_admin_id,
+                    text=approval_caption,
+                    parse_mode="HTML"
+                )
+                await send_and_delete_message(context, update.effective_chat.id, "✅ Your request to index this file has been sent to the admin for approval.")
+            except TelegramError as e:
+                logger.error(f"Failed to send file for indexing approval: {e}")
+                await send_and_delete_message(context, update.effective_chat.id, "❌ Could not send the file to the admin for approval. Please try again later.")
+        else:
+            await send_and_delete_message(context, update.effective_chat.id, "❌ No admin configured to approve requests.")
+        return
+
+    # Original workflow for requesting a channel index
+    if not context.args:
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            "**Usage:**\n"
+            "1. Reply to a file with `/request_index` to request it to be indexed.\n"
+            "2. Use `/request_index <channel_link>` to request a channel to be indexed.",
+            parse_mode="Markdown"
+        )
+        return
+
+    request_text = " ".join(context.args)
+    log_message = (
+        f"🙏 **New Channel Index Request**\n\n"
+        f"**From User:** {user.mention_html()}\n"
+        f"**User ID:** `{user.id}`\n"
+        f"**Username:** @{user.username or 'N/A'}\n\n"
+        f"**Channel to Index:**\n`{request_text}`"
+    )
+
+    try:
+        await context.bot.send_message(chat_id=LOG_CHANNEL, text=log_message, parse_mode="HTML")
+        confirmation_text = f"✅ {user.mention_html()}, your request to index the channel has been sent to the admins."
+        await send_and_delete_message(context, update.effective_chat.id, confirmation_text, parse_mode="HTML")
+    except TelegramError as e:
+        logger.error(f"Failed to process /request_index command for a channel: {e}")
+        await send_and_delete_message(context, update.effective_chat.id, "❌ Sorry, there was an error sending your request.")
+
 async def refer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /refer command to get a referral link."""
     asyncio.create_task(react_to_message_task(update))
@@ -1471,6 +1568,82 @@ async def grp_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TY
             failed_count += 1
 
     await send_and_delete_message(context, update.effective_chat.id, f"✅ Group broadcast complete!\n\nSent to: {sent_count} groups\nFailed: {failed_count} groups")
+
+
+async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to approve and index a user-submitted file."""
+    asyncio.create_task(react_to_message_task(update))
+    user = update.effective_user
+    if user.id not in ADMINS:
+        return # Silently ignore from non-admins
+
+    replied_message = update.message.reply_to_message
+    if not replied_message or not (replied_message.document or replied_message.video or replied_message.audio):
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You must reply to a file message to use this command.")
+        return
+
+    # The replied message is the one to be indexed.
+    try:
+        forwarded_message = await replied_message.forward(DB_CHANNEL)
+
+        file = forwarded_message.document or forwarded_message.video or forwarded_message.audio
+        if file:
+            if forwarded_message.caption:
+                raw_name = forwarded_message.caption
+            else:
+                raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
+
+            clean_name = raw_name.replace("_", " ").replace(".", " ").replace("-", " ") if raw_name else "Unknown"
+
+            saved = False
+            for i in range(len(MONGO_URIS)):
+                idx = (current_uri_index + i) % len(MONGO_URIS)
+                uri_to_try = MONGO_URIS[idx]
+                client = mongo_clients.get(uri_to_try)
+                if not client: continue
+                try:
+                    temp_db = client["telegram_files"]
+                    temp_files_col = temp_db["files"]
+                    temp_files_col.insert_one({
+                        "file_name": clean_name,
+                        "file_id": forwarded_message.message_id,
+                        "channel_id": DB_CHANNEL,
+                        "file_size": file.file_size,
+                    })
+                    saved = True
+                    break
+                except Exception as e:
+                    logger.error(f"DB Error while indexing from /done command: {e}")
+
+            if saved:
+                await send_and_delete_message(context, update.effective_chat.id, f"✅ **Indexed:** {clean_name}")
+            else:
+                await send_and_delete_message(context, update.effective_chat.id, "❌ **Failed:** Could not save the file to any database.")
+        else:
+            await send_and_delete_message(context, update.effective_chat.id, "❌ **Failed:** The replied message does not contain a valid file.")
+    except Exception as e:
+        logger.error(f"Error during /done command: {e}")
+        await send_and_delete_message(context, update.effective_chat.id, f"❌ **Error:** An unexpected error occurred.\n`{e}`")
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to reject a user-submitted file."""
+    asyncio.create_task(react_to_message_task(update))
+    user = update.effective_user
+    if user.id not in ADMINS:
+        return # Silently ignore from non-admins
+
+    replied_message = update.message.reply_to_message
+    if not replied_message:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You must reply to a message to use this command.")
+        return
+
+    try:
+        await replied_message.delete()
+        await update.message.delete()
+    except TelegramError as e:
+        logger.warning(f"Could not delete messages on /cancel: {e}")
+
+    await send_and_delete_message(context, update.effective_chat.id, "❌ Request cancelled.")
 
 
 async def index_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2316,7 +2489,9 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("info", info_command))
     ptb_app.add_handler(CommandHandler("rand", rand_command))
     ptb_app.add_handler(CommandHandler("refer", refer_command))
-    ptb_app.add_handler(CommandHandler("request", request_command))
+    ptb_app.add_handler(CommandHandler("request_index", request_index_command))
+    ptb_app.add_handler(CommandHandler("done", done_command))
+    ptb_app.add_handler(CommandHandler("cancel", cancel_command))
     ptb_app.add_handler(CommandHandler("log", log_command))
     ptb_app.add_handler(CommandHandler("total_users", total_users_command))
     ptb_app.add_handler(CommandHandler("total_files", total_files_command))
