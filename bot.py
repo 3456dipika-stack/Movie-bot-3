@@ -2010,7 +2010,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         logger.error(f"DB Error while fetching file {file_id_str} for verified user: {e}")
 
                 if file_data:
-                    asyncio.create_task(send_file_task(user_id, query.message.chat.id, context, file_data, query.from_user.mention_html()))
+                try:
+                    await send_file_task(user_id, query.message.chat.id, context, file_data, query.from_user.mention_html())
+                except TelegramError as e:
+                    if "Forbidden: bot can't initiate conversation with a user" in e.message:
+                        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Start Bot", url=f"https://t.me/{context.bot.username}?start=start")]])
+                        await query.message.reply_text("You must start me in a private chat first!", reply_markup=keyboard)
+                    else:
+                        logger.error(f"Error sending file in button_handler: {e}")
+                        await query.message.reply_text("❌ An error occurred while trying to send the file.")
                 else:
                     await send_and_delete_message(context, user_id, "❌ File not found.")
 
@@ -2027,7 +2035,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await send_and_delete_message(context, user_id, "❌ No files found on this page to send.")
                     return
 
-                asyncio.create_task(send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html()))
+            try:
+                await send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html())
+            except TelegramError as e:
+                if "Forbidden: bot can't initiate conversation with a user" in e.message:
+                    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Start Bot", url=f"https://t.me/{context.bot.username}?start=start")]])
+                    await query.message.reply_text("You must start me in a private chat first!", reply_markup=keyboard)
+                else:
+                    logger.error(f"Error sending files in button_handler: {e}")
+                    await query.message.reply_text("❌ An error occurred while trying to send the files.")
             return
 
         # --- Start Verification for Non-Admin/Non-Verified Users ---
