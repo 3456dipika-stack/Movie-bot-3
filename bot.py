@@ -60,34 +60,29 @@ CUSTOM_PROMO_MESSAGE = (
 )
 
 HELP_TEXT = (
-    "**Here is a complete list of available commands:**\n\n"
+    "**Here is a list of available commands:**\n\n"
     "**User Commands:**\n"
-    "• `/start` - Start the bot and get your details.\n"
+    "• `/start` - Start the bot.\n"
     "• `/help` - Show this help message.\n"
-    "• `/info` - Get information about this bot.\n"
-    "• `/rand` - Get a random file from the database.\n"
+    "• `/info` - Get bot information.\n"
     "• `/refer` - Get your referral link to earn premium access.\n"
-    "• `/request_index` - Reply to a file to request it be indexed, or use with a link to request a channel index.\n"
-    "• Send any text to search for a file.\n\n"
+    "• `/request <name>` - Request a file.\n"
+    "• Send any text to search for a file (admins only in private chat).\n\n"
     "**Admin Commands:**\n"
     "• `/log` - Show recent error logs.\n"
-    "• `/total_users` - Get the total number of users in the database.\n"
-    "• `/total_files` - Get the total number of files in the current database.\n"
+    "• `/total_users` - Get the total number of users.\n"
+    "• `/total_files` - Get the total number of files in the current DB.\n"
     "• `/stats` - Get bot and database statistics.\n"
-    "• `/findfile <name>` - Find a file's MongoDB ID by its name.\n"
-    "• `/deletefile <id>` - Delete a file from the database using its ID.\n"
+    "• `/findfile <name>` - Find a file's ID by name.\n"
+    "• `/deletefile <id>` - Delete a file from the database.\n"
     "• `/deleteall` - Delete all files from the current database.\n"
-    "• `/ban <user_id>` - Ban a user from using the bot.\n"
+    "• `/ban <user_id>` - Ban a user.\n"
     "• `/unban <user_id>` - Unban a user.\n"
     "• `/freeforall` - Grant 12-hour premium access to all users.\n"
     "• `/broadcast <msg>` - Send a message to all users.\n"
-    "• `/grp_broadcast <msg>` - Send a message to all connected groups.\n"
-    "• `/done` - Reply to a file to approve and index it.\n"
-    "• `/cancel` - Reply to a file to reject it.\n"
-    "• `/index <channel_id> [skip]` - Index all files from a given channel.\n"
-    "• `/restart` - Restart the bot.\n"
-    "• `/pm_on` - Allow all users to search in private messages.\n"
-    "• `/pm_off` - Restrict private message search to admins only.\n"
+    "• `/grp_broadcast <msg>` - Send a message to all connected groups where the bot is an admin.\n"
+        "• `/index_channel <channel_id> [skip]` - Index files from a channel.\n"
+        "• `/addlinkshort <api_url> <api_key>` - Set the link shortener details.\n"
     "• Send a file to me in a private message to index it."
 )
 
@@ -97,6 +92,8 @@ MONGO_URIS = [
     "mongodb+srv://28c2kqa_db_user:IL51mem7W6g37mA5@cluster0.np0ffl0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
 ]
 GROUPS_DB_URIS = ["mongodb+srv://6p5e2y8_db_user:MxRFLhQ534AI3rfQ@cluster0.j9hcylx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
+VERIFICATION_DB_URIS = ["mongodb+srv://7eqsiq8_db_user:h6nYmRKbgHJDALUA@cluster0.wuntcv8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
+VERIFIED_USERS_DB_URIS = ["mongodb+srv://q9amkpx_db_user:xuLc5qUJAJMBCtDH@cluster0.mvwgcxd.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
 REFERRAL_DB_URI = "mongodb+srv://qy8gjiw_db_user:JjryWhQV4CYtzcYo@cluster0.lkkvli8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 current_uri_index = 0
 
@@ -114,6 +111,7 @@ referred_users_col = None
 
 
 # In-memory caches for performance
+verified_user_cache = {}  # {user_id: expiry_timestamp}
 banned_user_cache = {}    # {user_id: bool}
 
 
@@ -212,16 +210,15 @@ def format_filename_for_display(filename: str) -> str:
         return filename[:mid] + '\n' + filename[mid:]
 
 async def check_member_status(user_id, context: ContextTypes.DEFAULT_TYPE):
-    """Check if the user is a member of ALL required channels."""
-    for channel_id in JOIN_CHECK_CHANNEL:
+    """Check if the user is a member of ALL required promotional channels."""
+    for channel in PROMO_CHANNELS:
         try:
-            member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
+            member = await context.bot.get_chat_member(chat_id=channel['id'], user_id=user_id)
             if member.status not in ["member", "administrator", "creator"]:
                 return False
         except TelegramError as e:
-            logger.error(f"Error checking member status for user {user_id} in channel {channel_id}: {e}")
-            return False
-
+            logger.error(f"Error checking member status for user {user_id} in channel {channel['id']}: {e}")
+            return False # If we can't check one, we assume they are not a member.
     return True
 
 async def is_banned(user_id):
@@ -265,22 +262,187 @@ async def bot_can_respond(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     return False
 
-async def get_random_promo_link():
-    """Selects a random promotional channel from the hardcoded list."""
-    return random.choice(PROMO_CHANNELS)
+async def is_user_verified(user_id: int):
+    """
+    Checks if a user is verified, either through premium status or standard 24-hour verification.
+    Caches the result for performance.
+    """
+    # 1. Check cache first
+    if user_id in verified_user_cache:
+        if time.time() < verified_user_cache[user_id]:
+            return True
+        else:
+            del verified_user_cache[user_id]
 
-async def is_user_premium(user_id: int):
-    """Checks if a user has an active premium subscription via the referral system."""
+    # 2. Check for Premium Status (from referrals)
     if referrals_col is not None:
         try:
             user_referral_data = referrals_col.find_one({"_id": user_id})
-            # The TTL index handles expiry, so just checking for existence is enough.
             if user_referral_data and "premium_until" in user_referral_data:
-                logger.info(f"User {user_id} has premium access.")
+                # The TTL index will automatically remove expired documents, so if it exists, it's valid.
+                expiry_time = time.time() + (30 * 24 * 60 * 60) # Cache for 30 days
+                verified_user_cache[user_id] = expiry_time
+                logger.info(f"User {user_id} has premium access. Cached.")
                 return True
         except Exception as e:
             logger.error(f"Failed to check premium status for user {user_id}: {e}")
+
+    # 3. If not premium, check standard 24-hour verification
+    for uri in VERIFIED_USERS_DB_URIS:
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
+        try:
+            db = client["verified_users_db"]
+            collection = db["verified_users"]
+            user_doc = collection.find_one({"_id": user_id})
+            if user_doc:
+                # Store result in cache with a 24-hour expiry
+                expiry_time = time.time() + (24 * 60 * 60)
+                verified_user_cache[user_id] = expiry_time
+                logger.info(f"User {user_id} is verified (24hr access). Cached.")
+                return True # Found in one DB, that's enough
+        except Exception as e:
+            logger.error(f"Failed to check verification status for user {user_id} at ...{uri[-20:]}: {e}")
+            continue
+
+    logger.info(f"User {user_id} is not verified.")
     return False
+
+async def mark_user_as_verified(user_id: int):
+    """Adds a user to the verified list using the connection pool and updates the cache."""
+    success_count = 0
+    for uri in VERIFIED_USERS_DB_URIS:
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
+        try:
+            db = client["verified_users_db"]
+            collection = db["verified_users"]
+            # The TTL index will handle the 24-hour expiry based on 'verifiedAt'
+            collection.update_one(
+                {"_id": user_id},
+                {"$set": {"verifiedAt": datetime.datetime.utcnow()}},
+                upsert=True
+            )
+            success_count += 1
+        except Exception as e:
+            logger.error(f"Failed to mark user {user_id} as verified at ...{uri[-20:]}: {e}")
+            continue
+
+    if success_count > 0:
+        # Update cache on success
+        expiry_time = time.time() + (24 * 60 * 60)
+        verified_user_cache[user_id] = expiry_time
+        logger.info(f"Marked user {user_id} as verified for 24 hours in {success_count}/{len(VERIFIED_USERS_DB_URIS)} DBs. Cache updated.")
+        return True
+    else:
+        logger.error(f"Failed to mark user {user_id} as verified in any DB.")
+        return False
+
+async def get_shortener_config():
+    """Fetches the shortener config from the dedicated database using the connection pool."""
+    for uri in VERIFICATION_DB_URIS:
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
+        try:
+            db = client["verification_db"]
+            config_col = db["config"]
+            config = config_col.find_one({"_id": "shortener_config"})
+            if config:
+                return config  # Return on first success
+        except Exception as e:
+            logger.error(f"Failed to get shortener config from ...{uri[-20:]}: {e}")
+            continue  # Try next URI
+    logger.error("All shortener DB URIs failed.")
+    return None
+
+async def get_shortened_link(url_to_shorten: str):
+    """Generates a shortened link using the configured API."""
+    config = await get_shortener_config()
+    if not config or 'api_url' not in config or 'api_key' not in config:
+        logger.error("Shortener API is not configured.")
+        return "Error: Shortener not configured."
+
+    api_url = config['api_url']
+    api_key = config['api_key']
+
+    # The API endpoint usually has the API key and the URL as parameters
+    full_api_url = f"{api_url}?api={api_key}&url={url_to_shorten}"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(full_api_url)
+            response.raise_for_status()
+            # The response is JSON, so we parse it and extract the URL.
+            data = response.json()
+            if data.get("status") == "success" and data.get("shortenedUrl"):
+                return data["shortenedUrl"]
+            else:
+                logger.error(f"Shortener API returned an unexpected response: {response.text}")
+                return "Error: Invalid response from shortener API."
+    except httpx.RequestError as e:
+        logger.error(f"Failed to get shortened link: {e}")
+        return f"Error: Could not shorten link. {e}"
+    except Exception as e:
+        logger.error(f"Failed to decode or process response from shortener API: {e}")
+        return "Error: Could not parse response from shortener API."
+
+async def save_verification_progress(verification_data):
+    """Saves or updates a user's verification progress using the connection pool."""
+    verification_data['createdAt'] = datetime.datetime.utcnow() # Reset timer on each step
+
+    success_count = 0
+    for uri in VERIFICATION_DB_URIS:
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
+        try:
+            db = client["verification_db"]
+            collection = db["pending_verifications"]
+            collection.update_one(
+                {"_id": verification_data["_id"]},
+                {"$set": verification_data},
+                upsert=True
+            )
+            success_count += 1
+        except Exception as e:
+            logger.error(f"Failed to save verification progress to ...{uri[-20:]}: {e}")
+            continue
+
+    return success_count > 0
+
+async def get_verification_progress(verification_id: str):
+    """Fetches a user's verification progress using the connection pool."""
+    for uri in VERIFICATION_DB_URIS:
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
+        try:
+            db = client["verification_db"]
+            collection = db["pending_verifications"]
+            progress = collection.find_one({"_id": verification_id})
+            if progress:
+                return progress
+        except Exception as e:
+            logger.error(f"Failed to get verification progress from ...{uri[-20:]}: {e}")
+            continue
+    return None
+
+async def delete_verification_progress(verification_id: str):
+    """Deletes a verification record from all DBs using the connection pool."""
+    for uri in VERIFICATION_DB_URIS:
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
+        try:
+            db = client["verification_db"]
+            collection = db["pending_verifications"]
+            collection.delete_one({"_id": verification_id})
+        except Exception as e:
+            logger.error(f"Failed to delete verification progress from ...{uri[-20:]}: {e}")
+            continue
 
 
 async def send_and_delete_message(
@@ -334,7 +496,7 @@ def connect_to_mongo():
     global mongo_clients, db, files_col, users_col, banned_users_col, groups_col, referrals_col, referred_users_col, current_uri_index
 
     # Consolidate all unique URIs
-    all_uris = set(MONGO_URIS + GROUPS_DB_URIS)
+    all_uris = set(MONGO_URIS + GROUPS_DB_URIS + VERIFICATION_DB_URIS + VERIFIED_USERS_DB_URIS)
     if REFERRAL_DB_URI:
         all_uris.add(REFERRAL_DB_URI)
 
@@ -480,6 +642,98 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
 # COMMAND HANDLERS
 # ========================
 
+async def handle_verification_step(update: Update, context: ContextTypes.DEFAULT_TYPE, verification_id: str):
+    """Handles a user clicking a verification deep link."""
+    user = update.effective_user
+    progress = await get_verification_progress(verification_id)
+
+    if not progress:
+        await send_and_delete_message(context, user.id, "❌ This verification link is invalid or has expired. Please start over by requesting a file again.")
+        return
+
+    if progress.get("user_id") != user.id:
+        await send_and_delete_message(context, user.id, "❌ This verification link is not for you.")
+        return
+
+    current_step = progress.get("step", 1)
+    next_step = current_step + 1
+
+    if next_step <= 3:
+        # Continue to the next step
+        progress['step'] = next_step
+        if await save_verification_progress(progress):
+            bot_username = context.bot.username
+            deep_link = f"https://t.me/{bot_username}?start={verification_id}"
+            shortened_link = await get_shortened_link(deep_link)
+
+            if "Error:" in shortened_link:
+                await send_and_delete_message(context, user.id, shortened_link)
+            else:
+                await send_and_delete_message(
+                    context,
+                    user.id,
+                    f"✅ Step {current_step} complete!\n\n"
+                    f"Step {next_step} of 3: Please open this link to continue:\n{shortened_link}"
+                )
+        else:
+            await send_and_delete_message(context, user.id, "❌ Could not save your verification progress. Please try again.")
+
+    else:
+        # Verification complete
+        await send_and_delete_message(context, user.id, "✅ Verification successful! You now have access for 24 hours. Sending your requested file(s)...")
+        await mark_user_as_verified(user.id)
+
+        # Deliver the originally requested file(s)
+        original_request = progress.get("original_request")
+        if original_request:
+            # The source chat for a verification-completed action is always the user's private chat.
+            source_chat_id = user.id
+
+            if original_request.get("type") == "single":
+                file_id = original_request.get("file_id")
+                file_data = None
+                for uri in MONGO_URIS:
+                    client = mongo_clients.get(uri)
+                    if not client:
+                        continue
+                    try:
+                        db = client["telegram_files"]
+                        file_data = db["files"].find_one({"_id": ObjectId(file_id)})
+                        if file_data: break
+                    except Exception: continue
+
+                if file_data:
+                    asyncio.create_task(send_file_task(user.id, source_chat_id, context, file_data, user.mention_html()))
+                else:
+                    await send_and_delete_message(context, user.id, "❌ The originally requested file could not be found.")
+
+            elif original_request.get("type") == "batch":
+                file_ids = [ObjectId(fid) for fid in original_request.get("file_ids", [])]
+                files_to_send = []
+                for uri in MONGO_URIS:
+                    client = mongo_clients.get(uri)
+                    if not client:
+                        continue
+                    try:
+                        db = client["telegram_files"]
+                        files_to_send.extend(list(db["files"].find({"_id": {"$in": file_ids}})))
+                    except Exception: continue
+
+                if files_to_send:
+                    asyncio.create_task(send_all_files_task(user.id, source_chat_id, context, files_to_send, user.mention_html()))
+                else:
+                    await send_and_delete_message(context, user.id, "❌ The originally requested files could not be found.")
+
+            elif original_request.get("type") == "random":
+                file_data = await get_random_file_from_db()
+                if file_data:
+                    asyncio.create_task(send_file_task(user.id, source_chat_id, context, file_data, user.mention_html()))
+                else:
+                    await send_and_delete_message(context, user.id, "❌ Could not find a random file after verification. The database might be empty.")
+
+        # Clean up the verification progress from the database
+        await delete_verification_progress(verification_id)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /start command, including verification and referral deep links."""
     asyncio.create_task(react_to_message_task(update))
@@ -538,8 +792,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Could not parse referral link payload: {payload} - {e}")
             # The new user will fall through to the standard welcome message.
 
-        # 2. Verification Link Handling (REMOVED)
-        pass
+        # 2. Verification Link Handling
+        elif not payload.startswith("ref_"):
+            # This must be a verification link, pass it to the handler
+            await handle_verification_step(update, context, payload)
+            await save_user_info(user)  # Save user info after they attempt verification
+            return  # Stop further execution of the start command
 
     # Save user info now. If they were referred, they are now marked as "existing".
     await save_user_info(user)
@@ -631,9 +889,9 @@ async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
-    is_premium = await is_user_premium(user_id)
+    is_verified = await is_user_verified(user_id)
 
-    if user_id in ADMINS or is_premium:
+    if user_id in ADMINS or is_verified:
         await send_and_delete_message(context, update.effective_chat.id, "⏳ Fetching a random file for you...")
 
         file_data = await get_random_file_from_db()
@@ -643,26 +901,9 @@ async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await send_and_delete_message(context, update.effective_chat.id, "❌ Could not find a random file. The database might be empty.")
     else:
-        # Start the new "join for reward" flow for a random file
-        await update.message.reply_text("Please check your private messages to continue.")
-        promo_link_data = await get_random_promo_link()
-        if promo_link_data:
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"Join {promo_link_data['name']} to get your reward!", url=promo_link_data['link'])],
-                [InlineKeyboardButton("I have Joined! ✅", callback_data=f"join_get_random_{promo_link_data['id']}")]
-            ])
-            try:
-                await send_and_delete_message(
-                    context,
-                    user_id, # Send to the user's private chat
-                    "🎁 **Join our channel to get your reward!**\n\nClick the button below to join the channel, then click 'I have Joined!' to receive your file.",
-                    reply_markup=keyboard
-                )
-            except TelegramError as e:
-                logger.error(f"Failed to send 'Join for Reward' message to user {user_id} for /rand: {e}")
-                await update.message.reply_text(f"❌ {update.effective_user.mention_html()}, I could not send you a message. Please unblock me and try again.", parse_mode="HTML")
-        else:
-            await send_and_delete_message(context, update.effective_chat.id, "❌ Could not find a promotional channel. Please contact an admin.")
+        # Start verification process
+        original_request = {"type": "random"}
+        await start_verification_process(context, user_id, update.effective_user.mention_html(), update.effective_chat.id, original_request)
 
 
 async def refer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -699,10 +940,8 @@ async def refer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_delete_message(context, update.effective_chat.id, "❌ An error occurred while fetching your referral data.")
 
 
-async def request_index_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Allows any user to request a channel to be indexed, or to request a specific file to be indexed by replying to it.
-    """
+async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /request command for users to request files."""
     asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
@@ -711,98 +950,48 @@ async def request_index_command(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     user = update.effective_user
-    replied_message = update.message.reply_to_message
-
-    # Workflow for replying to a file to request its index
-    if replied_message and (replied_message.document or replied_message.video or replied_message.audio):
-        if ADMINS:
-            primary_admin_id = ADMINS[0]
-            requester_mention = user.mention_html()
-
-            # Forward the file to the admin with approval buttons
-            caption = (
-                f"**File Index Request**\n\n"
-                f"**From User:** {requester_mention}\n"
-                f"**User ID:** `{user.id}`\n\n"
-                "Please review and decide whether to index this file."
-            )
-
-            file_to_send = replied_message.document or replied_message.video or replied_message.audio
-
-            try:
-                # Send a new message with the file to the admin, handling different file types
-                if replied_message.document:
-                    sent_file_message = await context.bot.send_document(
-                        chat_id=primary_admin_id,
-                        document=file_to_send.file_id,
-                        caption=replied_message.caption
-                    )
-                elif replied_message.video:
-                    sent_file_message = await context.bot.send_video(
-                        chat_id=primary_admin_id,
-                        video=file_to_send.file_id,
-                        caption=replied_message.caption
-                    )
-                elif replied_message.audio:
-                    sent_file_message = await context.bot.send_audio(
-                        chat_id=primary_admin_id,
-                        audio=file_to_send.file_id,
-                        caption=replied_message.caption
-                    )
-                else:
-                    # Should not happen due to the check above, but as a fallback
-                    await send_and_delete_message(context, update.effective_chat.id, "❌ Unsupported file type for indexing.")
-                    return
-
-                # Now send the approval instructions
-                approval_caption = (
-                    f"**File Index Request**\n\n"
-                    f"**From User:** {requester_mention}\n"
-                    f"**User ID:** `{user.id}`\n\n"
-                    "Reply to the file above with `/done` to index it, or `/cancel` to reject it."
-                )
-
-                await context.bot.send_message(
-                    chat_id=primary_admin_id,
-                    text=approval_caption,
-                    parse_mode="HTML"
-                )
-                await send_and_delete_message(context, update.effective_chat.id, "✅ Your request to index this file has been sent to the admin for approval.")
-            except TelegramError as e:
-                logger.error(f"Failed to send file for indexing approval: {e}")
-                await send_and_delete_message(context, update.effective_chat.id, "❌ Could not send the file to the admin for approval. Please try again later.")
-        else:
-            await send_and_delete_message(context, update.effective_chat.id, "❌ No admin configured to approve requests.")
-        return
-
-    # Original workflow for requesting a channel index
     if not context.args:
         await send_and_delete_message(
             context,
             update.effective_chat.id,
-            "**Usage:**\n"
-            "1. Reply to a file with `/request_index` to request it to be indexed.\n"
-            "2. Use `/request_index <channel_link>` to request a channel to be indexed.",
+            "Please provide a movie or file name to request.\n\nUsage: `/request <name>`",
             parse_mode="Markdown"
         )
         return
 
     request_text = " ".join(context.args)
+
+    # Format the message for the log channel
     log_message = (
-        f"🙏 **New Channel Index Request**\n\n"
+        f"🙏 **New Request**\n\n"
         f"**From User:** {user.mention_html()}\n"
         f"**User ID:** `{user.id}`\n"
         f"**Username:** @{user.username or 'N/A'}\n\n"
-        f"**Channel to Index:**\n`{request_text}`"
+        f"**Request:**\n`{request_text}`"
     )
 
     try:
-        await context.bot.send_message(chat_id=LOG_CHANNEL, text=log_message, parse_mode="HTML")
-        confirmation_text = f"✅ {user.mention_html()}, your request to index the channel has been sent to the admins."
-        await send_and_delete_message(context, update.effective_chat.id, confirmation_text, parse_mode="HTML")
+        # Forward the request to the log channel
+        await context.bot.send_message(
+            chat_id=LOG_CHANNEL,
+            text=log_message,
+            parse_mode="HTML"
+        )
+        # Confirm to the user
+        confirmation_text = f"✅ {user.mention_html()}, your request has been sent to the admins. They will be notified."
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            confirmation_text,
+            parse_mode="HTML"
+        )
     except TelegramError as e:
-        logger.error(f"Failed to process /request_index command for a channel: {e}")
-        await send_and_delete_message(context, update.effective_chat.id, "❌ Sorry, there was an error sending your request.")
+        logger.error(f"Failed to process /request command: {e}")
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            "❌ Sorry, there was an error sending your request. Please try again later."
+        )
 
 
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1284,89 +1473,7 @@ async def grp_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TY
     await send_and_delete_message(context, update.effective_chat.id, f"✅ Group broadcast complete!\n\nSent to: {sent_count} groups\nFailed: {failed_count} groups")
 
 
-
-async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to approve and index a user-submitted file."""
-    asyncio.create_task(react_to_message_task(update))
-    user = update.effective_user
-    if user.id not in ADMINS:
-        return # Silently ignore from non-admins
-
-    replied_message = update.message.reply_to_message
-    if not replied_message or not (replied_message.document or replied_message.video or replied_message.audio):
-        await send_and_delete_message(context, update.effective_chat.id, "❌ You must reply to a file message to use this command.")
-        return
-
-    # The replied message is the one to be indexed.
-    # We can reuse the logic from `save_file_from_channel` but simplified.
-    try:
-        forwarded_message = await replied_message.forward(DB_CHANNEL)
-
-        file = forwarded_message.document or forwarded_message.video or forwarded_message.audio
-        if file:
-            if forwarded_message.caption:
-                raw_name = forwarded_message.caption
-            else:
-                raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
-
-            clean_name = raw_name.replace("_", " ").replace(".", " ").replace("-", " ") if raw_name else "Unknown"
-
-            saved = False
-            for i in range(len(MONGO_URIS)):
-                idx = (current_uri_index + i) % len(MONGO_URIS)
-                uri_to_try = MONGO_URIS[idx]
-                client = mongo_clients.get(uri_to_try)
-                if not client: continue
-                try:
-                    temp_db = client["telegram_files"]
-                    temp_files_col = temp_db["files"]
-                    temp_files_col.insert_one({
-                        "file_name": clean_name,
-                        "file_id": forwarded_message.message_id,
-                        "channel_id": DB_CHANNEL,
-                        "file_size": file.file_size,
-                    })
-                    saved = True
-                    break
-                except Exception as e:
-                    logger.error(f"DB Error while indexing from /done command: {e}")
-
-            if saved:
-                await send_and_delete_message(context, update.effective_chat.id, f"✅ **Indexed:** {clean_name}")
-            else:
-                await send_and_delete_message(context, update.effective_chat.id, "❌ **Failed:** Could not save the file to any database.")
-        else:
-            await send_and_delete_message(context, update.effective_chat.id, "❌ **Failed:** The replied message does not contain a valid file.")
-    except Exception as e:
-        logger.error(f"Error during /done command: {e}")
-        await send_and_delete_message(context, update.effective_chat.id, f"❌ **Error:** An unexpected error occurred.\n`{e}`")
-
-async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to reject a user-submitted file."""
-    asyncio.create_task(react_to_message_task(update))
-    user = update.effective_user
-    if user.id not in ADMINS:
-        return # Silently ignore from non-admins
-
-    replied_message = update.message.reply_to_message
-    if not replied_message:
-        await send_and_delete_message(context, update.effective_chat.id, "❌ You must reply to a message to use this command.")
-        return
-
-    try:
-        # To keep things clean, delete the bot's messages (the file and the instruction message)
-        await replied_message.delete()
-        await update.message.delete()
-        # Find the instruction message that came after the file and delete it too.
-        # This is a bit tricky, but we can assume it's the message right after the file.
-        # A more robust solution might involve storing message IDs, but this is simpler.
-    except TelegramError as e:
-        logger.warning(f"Could not delete messages on /cancel: {e}")
-
-    await send_and_delete_message(context, update.effective_chat.id, "❌ Request cancelled.")
-
-
-async def index_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def index_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to index files from a given channel."""
     asyncio.create_task(react_to_message_task(update))
     if update.effective_user.id not in ADMINS:
@@ -1374,7 +1481,7 @@ async def index_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if len(context.args) < 1:
-        await send_and_delete_message(context, update.effective_chat.id, "Usage: /index <channel_id> [skip_messages]")
+        await send_and_delete_message(context, update.effective_chat.id, "Usage: /index_channel <channel_id> [skip_messages]")
         return
 
     try:
@@ -1392,7 +1499,7 @@ async def index_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     # Schedule the indexing task to run in the background
-    asyncio.create_task(index_task(context, channel_id, skip_messages, update.effective_chat.id))
+    asyncio.create_task(index_channel_task(context, channel_id, skip_messages, update.effective_chat.id))
     await send_and_delete_message(context, update.effective_chat.id, "✅ Indexing has started in the background. I will notify you when it's complete.")
 
 async def pm_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1453,7 +1560,7 @@ async def addlinkshort_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await send_and_delete_message(context, update.effective_chat.id, f"✅ Link shortener details saved to {success_count}/{len(VERIFICATION_DB_URIS)} databases.")
 
 
-async def index_task(context: ContextTypes.DEFAULT_TYPE, channel_id: int, skip: int, user_chat_id: int):
+async def index_channel_task(context: ContextTypes.DEFAULT_TYPE, channel_id: int, skip: int, user_chat_id: int):
     """Background task to handle channel indexing."""
     last_message_id = 0
     try:
@@ -1582,14 +1689,10 @@ async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Forward to database channel
-    try:
-        forwarded = await update.message.forward(DB_CHANNEL)
-    except TelegramError as e:
-        logger.error(f"Failed to forward message from PM to DB_CHANNEL: {e}")
-        await send_and_delete_message(context, update.effective_chat.id, "❌ Failed to forward file to database channel.")
-        return
+    forwarded = await update.message.forward(DB_CHANNEL)
 
     # Get filename from caption, then from file_name, replacing underscores, dots, and hyphens with spaces
+    # Otherwise, use a default value
     if update.message.caption:
         raw_name = update.message.caption
     else:
@@ -1604,8 +1707,8 @@ async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i in range(len(MONGO_URIS)):
         idx = (current_uri_index + i) % len(MONGO_URIS)
         uri_to_try = MONGO_URIS[idx]
-        client = mongo_clients.get(uri_to_try)
 
+        client = mongo_clients.get(uri_to_try)
         if not client:
             logger.warning(f"Skipping disconnected DB for file save: ...{uri_to_try[-20:]}")
             continue
@@ -1613,6 +1716,8 @@ async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             temp_db = client["telegram_files"]
             temp_files_col = temp_db["files"]
+
+            # Try to save metadata
             temp_files_col.insert_one({
                 "file_name": clean_name,
                 "file_id": forwarded.message_id,
@@ -1620,6 +1725,7 @@ async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "file_size": file.file_size,
             })
 
+            # If successful and this is not the current active DB, switch to it.
             if idx != current_uri_index:
                 current_uri_index = idx
                 db = temp_db
@@ -1630,7 +1736,7 @@ async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await send_and_delete_message(context, update.effective_chat.id, f"✅ Saved to DB #{idx + 1}: {clean_name}")
             saved = True
-            break
+            break # Exit loop on success
         except Exception as e:
             logger.error(f"Error saving file with URI #{idx + 1}: {e}")
             if idx == current_uri_index and len(MONGO_URIS) > 1:
@@ -1748,12 +1854,8 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await save_user_info(update.effective_user)
     if not await check_member_status(update.effective_user.id, context):
-        # NEW: Updated to show buttons for all channels
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Join Channel: @filestore4u", url="https://t.me/filestore4u")],
-            [InlineKeyboardButton("Join Channel: @code_boost", url="https://t.me/code_boost")],
-            [InlineKeyboardButton("Join Channel: @krbook_official", url="https://t.me/krbook_official")]
-        ])
+        buttons = [[InlineKeyboardButton(f"Join {ch['name']}", url=ch['link'])] for ch in PROMO_CHANNELS]
+        keyboard = InlineKeyboardMarkup(buttons)
         await send_and_delete_message(context, update.effective_chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
         return
 
@@ -2008,19 +2110,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await save_user_info(update.effective_user)
+    if not await check_member_status(update.effective_user.id, context):
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Join Channel: @filestore4u", url="https://t.me/filestore4u")],
+            [InlineKeyboardButton("Join Channel: @code_boost", url="https://t.me/code_boost")],
+            [InlineKeyboardButton("Join Channel: @krbook_official", url="https://t.me/krbook_official")]
+        ])
+        await send_and_delete_message(context, query.message.chat.id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
+        return
+
     data = query.data
     user_id = query.from_user.id
 
     # --- File Request Logic (get_ or sendall_) ---
     if data.startswith("get_") or data.startswith("sendall_"):
-        is_premium = await is_user_premium(user_id)
+        is_verified = await is_user_verified(user_id)
 
-        # Admins and premium users get files directly
-        if user_id in ADMINS or is_premium:
+        # Admins and already verified users get files directly
+        if user_id in ADMINS or is_verified:
             if user_id in ADMINS:
                 await send_and_delete_message(context, query.message.chat.id, "⌛ Processing your request as an admin...")
             else:
-                 await send_and_delete_message(context, query.message.chat.id, "✅ You have premium access. Sending your file(s)...")
+                 await send_and_delete_message(context, query.message.chat.id, "✅ You are already verified. Sending your file(s)...")
 
             # --- Send Single File ---
             if data.startswith("get_"):
@@ -2036,7 +2147,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         file_data = temp_files_col.find_one({"_id": ObjectId(file_id_str)})
                         if file_data: break
                     except Exception as e:
-                        logger.error(f"DB Error while fetching file {file_id_str} for premium user: {e}")
+                        logger.error(f"DB Error while fetching file {file_id_str} for verified user: {e}")
 
                 if file_data:
                     asyncio.create_task(send_file_task(user_id, query.message.chat.id, context, file_data, query.from_user.mention_html()))
@@ -2059,93 +2170,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 asyncio.create_task(send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html()))
             return
 
-        # --- Start "Join for Reward" flow for non-premium users ---
+        # --- Start Verification for Non-Admin/Non-Verified Users ---
         else:
-            await query.answer("Please check your private messages to continue.", show_alert=True)
-            promo_link_data = await get_random_promo_link()
-            if promo_link_data:
-                # The 'data' variable already contains the file request (e.g., "get_...")
-                # We pass it directly to the 'join' callback
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton(f"Join {promo_link_data['name']} to get your reward!", url=promo_link_data['link'])],
-                    [InlineKeyboardButton("I have Joined! ✅", callback_data=f"join_{data}_{promo_link_data['channel_id']}")]
-                ])
-                try:
-                    await send_and_delete_message(
-                        context,
-                        user_id, # Send to the user's private chat
-                        "🎁 **Join our channel to get your reward!**\n\nClick the button below to join the channel, then click 'I have Joined!' to receive your file.",
-                        reply_markup=keyboard
-                    )
-                except TelegramError as e:
-                    logger.error(f"Failed to send 'Join for Reward' message to user {user_id}: {e}")
-                    # Inform the user in the group if the PM fails (e.g., bot is blocked)
-                    await query.message.reply_text(f"❌ {query.from_user.mention_html()}, I could not send you a message. Please unblock me and try again.", parse_mode="HTML")
-            else:
-                await query.message.reply_text("❌ Could not find a promotional channel. Please contact an admin.")
-        return
-
-    # --- Join for Reward Logic ---
-    elif data.startswith("join_"):
-        # The format is join_{original_callback_data}_{channel_id}
-        parts = data.split("_")
-        channel_id_str = parts[-1]
-        original_callback_data = "_".join(parts[1:-1])
-        channel_id = int(channel_id_str)
-
-        try:
-            member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
-            is_member = member.status in ["member", "administrator", "creator"]
-        except TelegramError as e:
-            logger.error(f"Error checking member status for user {user_id} in channel {channel_id}: {e}")
-            is_member = False
-
-        if is_member:
-            await query.answer("✅ Thank you for joining! Sending your reward...", show_alert=True)
-
-            # --- Send Single File ---
-            if original_callback_data.startswith("get_"):
-                file_id_str = original_callback_data.split("_", 1)[1]
-
-                if file_id_str == 'random':
-                    file_data = await get_random_file_from_db()
-                else:
-                    file_data = None
-                    for uri in MONGO_URIS:
-                        client = mongo_clients.get(uri)
-                        if not client:
-                            continue
-                        try:
-                            temp_db = client["telegram_files"]
-                            temp_files_col = temp_db["files"]
-                            file_data = temp_files_col.find_one({"_id": ObjectId(file_id_str)})
-                            if file_data: break
-                        except Exception as e:
-                            logger.error(f"DB Error while fetching file {file_id_str} after join: {e}")
-
-                if file_data:
-                    asyncio.create_task(send_file_task(user_id, query.message.chat.id, context, file_data, query.from_user.mention_html()))
-                else:
-                    await send_and_delete_message(context, user_id, "❌ File not found.")
-
-            # --- Send All Files (Batch) ---
-            elif original_callback_data.startswith("sendall_"):
-                _, page_str, search_query = original_callback_data.split("_", 2)
+            original_request = {}
+            if data.startswith("get_"):
+                file_id_str = data.split("_", 1)[1]
+                original_request = {"type": "single", "file_id": file_id_str}
+            elif data.startswith("sendall_"):
+                _, page_str, search_query = data.split("_", 2)
                 page = int(page_str)
                 final_results = context.user_data.get('search_results')
                 if not final_results:
                     await send_and_delete_message(context, user_id, "❌ Search session expired. Please search again.")
-                else:
-                    files_to_send = final_results[page * 10:(page + 1) * 10]
-                    if not files_to_send:
-                        await send_and_delete_message(context, user_id, "❌ No files found on this page to send.")
-                    else:
-                        asyncio.create_task(send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html()))
-        else:
-            await query.answer("❌ You haven't joined the channel yet. Please join to get your file.", show_alert=True)
-        return
+                    return
+                files_to_send = final_results[page * 10:(page + 1) * 10]
+                if not files_to_send:
+                    await send_and_delete_message(context, user_id, "❌ No files found on this page to send.")
+                    return
+                file_ids = [str(file['_id']) for file in files_to_send]
+                original_request = {"type": "batch", "file_ids": file_ids}
 
-    # --- Admin Indexing Approval (REMOVED, now handled by /done and /cancel commands) ---
+            await start_verification_process(context, user_id, query.from_user.mention_html(), query.message.chat.id, original_request)
+        return
 
     # --- Other Button Logic (Pagination, Start Menu, etc.) ---
     elif data.startswith("page_"):
@@ -2216,6 +2262,40 @@ async def main_async():
     logger.info("Web server started in a background thread.")
     ptb_app.bot_data["server"] = server
 
+    # Create TTL index for pending verifications (48-hour expiry - 48*60*60 = 172800)
+    for uri in VERIFICATION_DB_URIS:
+        try:
+            client = mongo_clients.get(uri)
+            if client:
+                db = client["verification_db"]
+                collection = db["pending_verifications"]
+                collection.create_index("createdAt", expireAfterSeconds=172800) # 48 hours
+                logger.info(f"TTL index on 'pending_verifications' collection ensured for 48 hours at ...{uri[-20:]}")
+        except PyMongoError as e:
+            if e.code == 85: # IndexOptionsConflict
+                logger.warning(f"TTL index for 'pending_verifications' at ...{uri[-20:]} already exists with different options. Skipping.")
+            else:
+                logger.error(f"Could not create TTL index for pending verifications at ...{uri[-20:]}: {e}")
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during TTL index creation for pending_verifications at ...{uri[-20:]}: {e}")
+
+    # Create TTL index for verified users (24-hour expiry - 24*60*60 = 86400)
+    for uri in VERIFIED_USERS_DB_URIS:
+        try:
+            client = mongo_clients.get(uri)
+            if client:
+                db = client["verified_users_db"]
+                collection = db["verified_users"]
+                collection.create_index("verifiedAt", expireAfterSeconds=86400) # 24 hours
+                logger.info(f"TTL index on 'verified_users' collection ensured for 24 hours at ...{uri[-20:]}")
+        except PyMongoError as e:
+            if e.code == 85: # IndexOptionsConflict
+                logger.warning(f"TTL index for 'verified_users' at ...{uri[-20:]} already exists with different options. Skipping.")
+            else:
+                logger.error(f"Could not create TTL index for verified_users at ...{uri[-20:]}: {e}")
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during TTL index creation for verified_users at ...{uri[-20:]}: {e}")
+
     # Create TTL index for premium users (expires at the time specified in the 'premium_until' field)
     if referrals_col is not None:
         try:
@@ -2236,7 +2316,7 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("info", info_command))
     ptb_app.add_handler(CommandHandler("rand", rand_command))
     ptb_app.add_handler(CommandHandler("refer", refer_command))
-    ptb_app.add_handler(CommandHandler("request_index", request_index_command))
+    ptb_app.add_handler(CommandHandler("request", request_command))
     ptb_app.add_handler(CommandHandler("log", log_command))
     ptb_app.add_handler(CommandHandler("total_users", total_users_command))
     ptb_app.add_handler(CommandHandler("total_files", total_files_command))
@@ -2250,9 +2330,8 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("broadcast", broadcast_message))
     ptb_app.add_handler(CommandHandler("grp_broadcast", grp_broadcast_command))
     ptb_app.add_handler(CommandHandler("restart", restart_command))
-    ptb_app.add_handler(CommandHandler("done", done_command))
-    ptb_app.add_handler(CommandHandler("cancel", cancel_command))
-    ptb_app.add_handler(CommandHandler("index", index_command))
+    ptb_app.add_handler(CommandHandler("index_channel", index_channel_command))
+    ptb_app.add_handler(CommandHandler("addlinkshort", addlinkshort_command))
     ptb_app.add_handler(CommandHandler("pm_on", pm_on_command))
     ptb_app.add_handler(CommandHandler("pm_off", pm_off_command))
 
