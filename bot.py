@@ -401,6 +401,17 @@ async def send_file_task(user_id: int, source_chat_id: int, context: ContextType
         )
 
         if sent_message:
+            if sent_message.caption:
+                try:
+                    await context.bot.edit_message_caption(
+                        chat_id=user_id,
+                        message_id=sent_message.message_id,
+                        caption=f'<a href="https://t.me/filestore4u">{html.escape(sent_message.caption)}</a>',
+                        parse_mode="HTML"
+                    )
+                except TelegramError as e:
+                    logger.warning(f"Could not edit caption for message {sent_message.message_id}: {e}")
+
             await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
             confirmation_text = f"✅ {user_mention}, I have sent the file to you in a private message. It will be deleted automatically in 5 minutes."
             await send_and_delete_message(context, source_chat_id, confirmation_text, parse_mode="HTML")
@@ -427,6 +438,17 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
                 from_chat_id=file["channel_id"],
                 message_id=file["file_id"],
             )
+            if sent_message.caption:
+                try:
+                    await context.bot.edit_message_caption(
+                        chat_id=user_id,
+                        message_id=sent_message.message_id,
+                        caption=f'<a href="https://t.me/filestore4u">{html.escape(sent_message.caption)}</a>',
+                        parse_mode="HTML"
+                    )
+                except TelegramError as e:
+                    logger.warning(f"Could not edit caption for message {sent_message.message_id} in batch: {e}")
+
             sent_messages.append(sent_message.message_id)
             await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
             await asyncio.sleep(0.5)
