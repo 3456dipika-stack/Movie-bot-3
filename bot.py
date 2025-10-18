@@ -47,6 +47,11 @@ PM_SEARCH_ENABLED = False   # Controls whether non-admins can search in PM
 
 # Custom promotional message (Simplified as per the last request)
 REACTIONS = ["👀", "😱", "🔥", "😍", "🎉", "🥰", "😇", "⚡"]
+PROMO_CHANNELS = [
+    {"name": "@filestore4u", "link": "https://t.me/filestore4u", "id": -1002692055617},
+    {"name": "@freemovie5u", "link": "https://t.me/freemovie5u", "id": -1002551875503},
+    {"name": "@KRBOOK_official", "link": "https://t.me/KRBOOK_official", "id": -1002839913869},
+]
 CUSTOM_PROMO_MESSAGE = (
     "Credit to Prince Kaustav Ray\n\n"
     "Join our main channel: @filestore4u\n"
@@ -77,8 +82,6 @@ HELP_TEXT = (
     "• `/freeforall` - Grant 12-hour premium access to all users.\n"
     "• `/broadcast <msg>` - Send a message to all users.\n"
     "• `/grp_broadcast <msg>` - Send a message to all connected groups.\n"
-    "• `/addpromo <link> <id> <name>` - Add a promotional channel.\n"
-    "• `/removepromo <id>` - Remove a promotional channel.\n"
     "• `/done` - Reply to a file to approve and index it.\n"
     "• `/cancel` - Reply to a file to reject it.\n"
     "• `/index <channel_id> [skip]` - Index all files from a given channel.\n"
@@ -94,7 +97,10 @@ MONGO_URIS = [
     "mongodb+srv://28c2kqa_db_user:IL51mem7W6g37mA5@cluster0.np0ffl0.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
 ]
 GROUPS_DB_URIS = ["mongodb+srv://6p5e2y8_db_user:MxRFLhQ534AI3rfQ@cluster0.j9hcylx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
-PROMO_LINKS_DB_URI = "mongodb+srv://7eqsiq8_db_user:h6nYmRKbgHJDALUA@cluster0.wuntcv8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0" # New DB for promo links
+
+
+
+
 REFERRAL_DB_URI = "mongodb+srv://qy8gjiw_db_user:JjryWhQV4CYtzcYo@cluster0.lkkvli8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 current_uri_index = 0
 
@@ -109,7 +115,6 @@ banned_users_col = None
 groups_col = None
 referrals_col = None
 referred_users_col = None
-promo_links_col = None # New collection for promo links
 
 
 # In-memory caches for performance
@@ -265,16 +270,8 @@ async def bot_can_respond(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return False
 
 async def get_random_promo_link():
-    """Fetches a random promotional link from the database."""
-    if promo_links_col is not None:
-        try:
-            pipeline = [{"$sample": {"size": 1}}]
-            result = list(promo_links_col.aggregate(pipeline))
-            if result:
-                return result[0]
-        except Exception as e:
-            logger.error(f"Failed to fetch random promo link: {e}")
-    return None
+    """Selects a random promotional channel from the hardcoded list."""
+    return random.choice(PROMO_CHANNELS)
 
 async def is_user_premium(user_id: int):
     """Checks if a user has an active premium subscription via the referral system."""
@@ -338,14 +335,12 @@ def connect_to_mongo():
     Initializes connection pools for all database URIs specified in the config.
     It also sets the initial active database connection.
     """
-    global mongo_clients, db, files_col, users_col, banned_users_col, groups_col, referrals_col, referred_users_col, promo_links_col, current_uri_index
+    global mongo_clients, db, files_col, users_col, banned_users_col, groups_col, referrals_col, referred_users_col, current_uri_index
 
     # Consolidate all unique URIs
     all_uris = set(MONGO_URIS + GROUPS_DB_URIS)
     if REFERRAL_DB_URI:
         all_uris.add(REFERRAL_DB_URI)
-    if PROMO_LINKS_DB_URI:
-        all_uris.add(PROMO_LINKS_DB_URI)
 
     for uri in all_uris:
         try:
@@ -382,18 +377,6 @@ def connect_to_mongo():
                 logger.critical("Failed to connect to the Referral MongoDB URI. Referral system will not function.")
         else:
             logger.warning("REFERRAL_DB_URI not set. Referral system will be disabled.")
-
-        # Connect to the promotional links database
-        if PROMO_LINKS_DB_URI:
-            promo_client = mongo_clients.get(PROMO_LINKS_DB_URI)
-            if promo_client:
-                promo_db = promo_client["promo_db"]
-                promo_links_col = promo_db["links"]
-                logger.info("Successfully connected to Promotional Links MongoDB.")
-            else:
-                logger.critical("Failed to connect to the Promotional Links MongoDB URI. The new verification system will not function.")
-        else:
-            logger.warning("PROMO_LINKS_DB_URI not set. The new verification system will be disabled.")
 
         logger.info(f"Successfully connected to initial MongoDB at index {current_uri_index}.")
         return True
@@ -1300,67 +1283,6 @@ async def grp_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TY
     await send_and_delete_message(context, update.effective_chat.id, f"✅ Group broadcast complete!\n\nSent to: {sent_count} groups\nFailed: {failed_count} groups")
 
 
-async def add_promo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to add a promotional channel to the database."""
-    asyncio.create_task(react_to_message_task(update))
-    if update.effective_user.id not in ADMINS:
-        await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
-        return
-
-    if len(context.args) != 3:
-        await send_and_delete_message(context, update.effective_chat.id, "Usage: /addpromo <channel_link> <channel_id> <channel_name>")
-        return
-
-    channel_link, channel_id_str, channel_name = context.args
-    try:
-        channel_id = int(channel_id_str)
-    except ValueError:
-        await send_and_delete_message(context, update.effective_chat.id, "❌ Channel ID must be a number.")
-        return
-
-    if promo_links_col is not None:
-        try:
-            promo_links_col.update_one(
-                {"_id": channel_id},
-                {"$set": {"channel_link": channel_link, "channel_name": channel_name}},
-                upsert=True
-            )
-            await send_and_delete_message(context, update.effective_chat.id, f"✅ Promotional channel '{channel_name}' has been added/updated.")
-        except Exception as e:
-            logger.error(f"Failed to add promo channel: {e}")
-            await send_and_delete_message(context, update.effective_chat.id, "❌ Failed to add promotional channel to the database.")
-    else:
-        await send_and_delete_message(context, update.effective_chat.id, "❌ Promotional links database not connected.")
-
-async def remove_promo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to remove a promotional channel from the database."""
-    asyncio.create_task(react_to_message_task(update))
-    if update.effective_user.id not in ADMINS:
-        await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
-        return
-
-    if not context.args or not context.args[0].lstrip('-').isdigit():
-        await send_and_delete_message(context, update.effective_chat.id, "Usage: /removepromo <channel_id>")
-        return
-
-    try:
-        channel_id = int(context.args[0])
-    except ValueError:
-        await send_and_delete_message(context, update.effective_chat.id, "❌ Channel ID must be a number.")
-        return
-
-    if promo_links_col is not None:
-        try:
-            result = promo_links_col.delete_one({"_id": channel_id})
-            if result.deleted_count > 0:
-                await send_and_delete_message(context, update.effective_chat.id, f"✅ Promotional channel with ID {channel_id} has been removed.")
-            else:
-                await send_and_delete_message(context, update.effective_chat.id, f"❌ Promotional channel with ID {channel_id} not found.")
-        except Exception as e:
-            logger.error(f"Failed to remove promo channel: {e}")
-            await send_and_delete_message(context, update.effective_chat.id, "❌ Failed to remove promotional channel from the database.")
-    else:
-        await send_and_delete_message(context, update.effective_chat.id, "❌ Promotional links database not connected.")
 
 async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to approve and index a user-submitted file."""
@@ -2164,16 +2086,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         original_callback_data = "_".join(parts[1:-1])
         channel_id = int(channel_id_str)
 
-        # Exempt specific channels from the check
-        if channel_id in [-1002692055617, -1002551875503, -1002839913869]: # @filestore4u, @freemovie5u, @code_boost
-            is_member = True
-        else:
-            try:
-                member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
-                is_member = member.status in ["member", "administrator", "creator"]
-            except TelegramError as e:
-                logger.error(f"Error checking member status for user {user_id} in channel {channel_id}: {e}")
-                is_member = False
+        try:
+            member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
+            is_member = member.status in ["member", "administrator", "creator"]
+        except TelegramError as e:
+            logger.error(f"Error checking member status for user {user_id} in channel {channel_id}: {e}")
+            is_member = False
 
         if is_member:
             await query.answer("✅ Thank you for joining! Sending your reward...", show_alert=True)
@@ -2325,8 +2243,6 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("broadcast", broadcast_message))
     ptb_app.add_handler(CommandHandler("grp_broadcast", grp_broadcast_command))
     ptb_app.add_handler(CommandHandler("restart", restart_command))
-    ptb_app.add_handler(CommandHandler("addpromo", add_promo_command))
-    ptb_app.add_handler(CommandHandler("removepromo", remove_promo_command))
     ptb_app.add_handler(CommandHandler("done", done_command))
     ptb_app.add_handler(CommandHandler("cancel", cancel_command))
     ptb_app.add_handler(CommandHandler("index", index_command))
