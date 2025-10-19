@@ -45,6 +45,12 @@ JOIN_CHECK_CHANNEL = [-1002692055617, -1002551875503, -1002839913869]
 ADMINS = [6705618257]        # Admin IDs
 PM_SEARCH_ENABLED = True   # Controls whether non-admins can search in PM
 
+# Words to ignore in search queries for better matching
+SEARCH_STOP_WORDS = [
+    "movie", "movies", "web", "series", "hd", "720p", "1080p", "480p", "4k",
+    "hindi", "english", "dual", "audio", "bluray", "webrip", "hdrip", "hdtc"
+]
+
 # Custom promotional message (Simplified as per the last request)
 REACTIONS = ["👀", "😱", "🔥", "😍", "🎉", "🥰", "😇", "⚡"]
 PROMO_CHANNELS = [
@@ -1762,6 +1768,15 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Normalize query for better fuzzy search
     normalized_query = raw_query.replace("_", " ").replace(".", " ").replace("-", " ").strip()
 
+    # Filter out stop words for more accurate searching
+    query_words = normalized_query.lower().split()
+    filtered_words = [word for word in query_words if word not in SEARCH_STOP_WORDS]
+    search_query = " ".join(filtered_words)
+
+    # Use the original normalized query if filtering results in an empty string
+    if not search_query:
+        search_query = normalized_query
+
     # Log the user's query
     user = update.effective_user
     log_text = f"🔍 User: {user.full_name} | @{user.username} | ID: {user.id}\nQuery: {raw_query}"
@@ -1774,15 +1789,15 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- REVISED SEARCH LOGIC (Broad Filtering + Fuzzy Ranking) ---
 
     # Split the query into words and escape them for a forgiving regex. Ignore short words.
-    words = [re.escape(word) for word in normalized_query.split() if len(word) > 1]
+    words = [re.escape(word) for word in search_query.split() if len(word) > 1]
 
     if not words:
         await send_and_delete_message(context, update.effective_chat.id, "❌ Query too short or invalid. Please try a longer search term.")
         return
 
-    # Create an AND condition using positive lookaheads.
-    # This ensures that ALL words must be in the filename to be considered for fuzzy ranking.
-    regex_pattern = re.compile("".join([f"(?=.*{word})" for word in words]), re.IGNORECASE)
+    # Create an OR condition using the '|' operator.
+    # This ensures that ANY of the words can be in the filename to be considered for fuzzy ranking.
+    regex_pattern = re.compile("|".join(words), re.IGNORECASE)
     query_filter = {"file_name": {"$regex": regex_pattern}}
 
     preliminary_results = []
@@ -1837,14 +1852,14 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
             continue
 
         # Check for an exact match first to prioritize it
-        if normalized_query.lower() == file['file_name'].lower():
+        if search_query.lower() == file['file_name'].lower():
             score = 101 # Give a score higher than any possible fuzzy score
         else:
             # Use WRatio for a more robust score that handles partial strings and other variations well.
-            score = fuzz.WRatio(normalized_query, file['file_name'])
+            score = fuzz.WRatio(search_query, file['file_name'])
 
-        # Keep results that have a score above 60 for better relevance.
-        if score > 45:
+        # Keep results that have a score above 40 for better relevance.
+        if score > 40:
             results_with_score.append((file, score))
             unique_files.add(file_key)
 
