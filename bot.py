@@ -55,7 +55,7 @@ SEARCH_STOP_WORDS = [
 REACTIONS = ["👀", "😱", "🔥", "😍", "🎉", "🥰", "😇", "⚡"]
 PROMO_CHANNELS = [
     {"name": "@filestore4u", "link": "https://t.me/filestore4u", "id": -1002692055617},
-    {"name": "@freemovie5u", "link": "https://t.me/freemovie5u", "id": -1002551875503},
+    {"name": "@code_boost", "link": "https://t.me/code_boost", "id": -1002551875503},
     {"name": "@KRBOOK_official", "link": "https://t.me/KRBOOK_official", "id": -1002839913869},
 ]
 CUSTOM_PROMO_MESSAGE = (
@@ -1858,7 +1858,11 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Use WRatio for a more robust score that handles partial strings and other variations well.
             score = fuzz.WRatio(search_query, file['file_name'])
 
-        # Keep results that have a score above 45 for better relevance.
+
+  
+
+
+ main
         if score > 45:
             results_with_score.append((file, score))
             unique_files.add(file_key)
