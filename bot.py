@@ -1857,12 +1857,7 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             # Use WRatio for a more robust score that handles partial strings and other variations well.
             score = fuzz.WRatio(search_query, file['file_name'])
-
-
-  
-
-
- main
+            
         if score > 45:
             results_with_score.append((file, score))
             unique_files.add(file_key)
