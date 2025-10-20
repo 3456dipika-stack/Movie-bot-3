@@ -579,12 +579,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     welcome_text = (
         f"<b>Hey, {user.mention_html()}!</b>\n\n"
-        "This is an advanced and powerful filter bot.\n\n"
-        "<b><u>Your Details:</u></b>\n"
-        f"<b>First Name:</b> {user.first_name}\n"
-        f"<b>Last Name:</b> {user.last_name or 'N/A'}\n"
-        f"<b>User ID:</b> <code>{user.id}</code>\n"
-        f"<b>Username:</b> @{user.username or 'N/A'}"
+        "This is an advanced and powerful filter bot."
     )
 
     keyboard = [
