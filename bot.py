@@ -123,6 +123,7 @@ clones_col = None
 
 # In-memory caches for performance
 banned_user_cache = {}    # {user_id: bool}
+pids = {}                 # {token: pid}
 
 
 # Logging setup with an in-memory buffer for the /log command
@@ -315,6 +316,22 @@ async def delete_message_after_delay(context, chat_id, message_id, delay):
         logger.info(f"Auto-deleted message {message_id} from chat {chat_id}.")
     except TelegramError as e:
         logger.warning(f"Failed to auto-delete message {message_id} from chat {chat_id}: {e}")
+
+
+def load_pids():
+    """Load PIDs of running clones from the database."""
+    if clones_col is not None:
+        for clone in clones_col.find({}, {"pid": 1, "_id": 1}):
+            pid = clone.get("pid")
+            token = clone.get("_id")
+            if pid and token:
+                # Check if the process is still running
+                try:
+                    os.kill(pid, 0)
+                    pids[token] = pid
+                except OSError:
+                    # Process is not running, so remove it from the database
+                    clones_col.delete_one({"_id": token})
 
 
 def connect_to_mongo():
@@ -1139,10 +1156,20 @@ async def clone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        clones_col.insert_one({"_id": token, "token": token})
-        # Start the new bot instance in the background
-        command = [sys.executable, "bot.py", "--token", token]
-        subprocess.Popen(command)
+        if clones_col.find_one({"_id": token}):
+            await send_and_delete_message(context, update.effective_chat.id, "❌ This bot token is already cloned.")
+            return
+
+        # Ensure the clones directory exists
+        if not os.path.exists("clones"):
+            os.makedirs("clones")
+
+        log_file_path = f"clones/{token}.log"
+        with open(log_file_path, "w") as log_file:
+            command = [sys.executable, "bot.py", "--token", token]
+            process = subprocess.Popen(command, stdout=log_file, stderr=log_file)
+        clones_col.insert_one({"_id": token, "token": token, "pid": process.pid})
+        pids[token] = process.pid
         response_text = (
             "✅ Bot token saved and the new clone has been started successfully in the background."
         )
@@ -1169,9 +1196,17 @@ async def deletebotconnection_command(update: Update, context: ContextTypes.DEFA
         return
 
     try:
-        result = clones_col.delete_one({"_id": token})
-        if result.deleted_count > 0:
-            response_text = "✅ Bot token connection deleted successfully."
+        clone_data = clones_col.find_one_and_delete({"_id": token})
+        if clone_data:
+            pid = clone_data.get("pid")
+            if pid:
+                try:
+                    os.kill(pid, 15)
+                except ProcessLookupError:
+                    pass  # Process already dead
+            if token in pids:
+                del pids[token]
+            response_text = "✅ Bot token connection deleted and process terminated successfully."
         else:
             response_text = "❌ Bot token not found in the database."
         await send_and_delete_message(context, update.effective_chat.id, response_text)
@@ -2195,6 +2230,8 @@ async def main_async():
     if not connect_to_mongo():
         logger.critical("Failed to connect to the initial MongoDB URI. Exiting.")
         return
+
+    load_pids()
 
     # Create the application instance
     ptb_app = Application.builder().token(token).build()
