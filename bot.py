@@ -81,6 +81,7 @@ HELP_TEXT = (
     "• `/total_files` - Get the total number of files in the current DB.\n"
     "• `/stats` - Get bot and database statistics.\n"
     "• `/findfile <name>` - Find a file's ID by name.\n"
+    "• `/recent` - Show the 10 most recently uploaded files.\n"
     "• `/deletefile <id>` - Delete a file from the database.\n"
     "• `/deleteall` - Delete all files from the current database.\n"
     "• `/ban <user_id>` - Ban a user.\n"
@@ -1070,6 +1071,40 @@ async def find_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response_text += "Copy the ID of the file you want to delete and use the command:\n`/deletefile <ID>`\n\nNote: `/deletefile` only works on the currently *active* database. If the file is not found, you may need to manually update the `current_uri_index` and restart."
 
     await send_and_delete_message(context, update.effective_chat.id, response_text, parse_mode="Markdown")
+
+
+async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to show the 10 most recently uploaded files."""
+    asyncio.create_task(react_to_message_task(update))
+    if not await bot_can_respond(update, context):
+        return
+    user_id = update.effective_user.id
+    if user_id not in ADMINS:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
+        return
+
+    if files_col is None:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ Database not connected.")
+        return
+
+    try:
+        # Fetch the last 10 documents, sorting by ObjectId which is chronological
+        recent_files = list(files_col.find().sort("_id", -1).limit(10))
+
+        if not recent_files:
+            await send_and_delete_message(context, update.effective_chat.id, "❌ No files found in the database.")
+            return
+
+        response_text = "📁 <b>Last 10 Uploaded Files:</b>\n\n"
+        for idx, file in enumerate(recent_files, start=1):
+            file_name_escaped = html.escape(file['file_name'])
+            response_text += f"{idx}. <code>{file_name_escaped}</code>\n"
+
+        await send_and_delete_message(context, update.effective_chat.id, response_text, parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Error fetching recent files: {e}")
+        await send_and_delete_message(context, update.effective_chat.id, "❌ An error occurred while fetching recent files.")
 
 
 async def delete_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2118,6 +2153,7 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("stats", stats_command))
     ptb_app.add_handler(CommandHandler("deletefile", delete_file_command))
     ptb_app.add_handler(CommandHandler("findfile", find_file_command))
+    ptb_app.add_handler(CommandHandler("recent", recent_command))
     ptb_app.add_handler(CommandHandler("deleteall", delete_all_command))
     ptb_app.add_handler(CommandHandler("ban", ban_user_command))
     ptb_app.add_handler(CommandHandler("unban", unban_user_command))
