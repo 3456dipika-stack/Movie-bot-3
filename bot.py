@@ -73,6 +73,7 @@ HELP_TEXT = (
     "• `/info` - Get bot information.\n"
     "• `/refer` - Get your referral link to earn premium access.\n"
     "• `/request <name>` - Request a file.\n"
+    "• `/clone <bot_token>` - Create a clone of the bot.\n"
     "• `/request_index` - Request a file or channel to be indexed.\n"
     "• Send any text to search for a file (admins only in private chat).\n\n"
     "**Admin Commands:**\n"
@@ -83,6 +84,7 @@ HELP_TEXT = (
     "• `/findfile <name>` - Find a file's ID by name.\n"
     "• `/recent` - Show the 10 most recently uploaded files.\n"
     "• `/deletefile <id>` - Delete a file from the database.\n"
+    "• `/deletebotconnection <bot_token>` - Delete a bot token connection.\n"
     "• `/deleteall` - Delete all files from the current database.\n"
     "• `/ban <user_id>` - Ban a user.\n"
     "• `/unban <user_id>` - Unban a user.\n"
@@ -100,6 +102,7 @@ MONGO_URIS = [
 ]
 GROUPS_DB_URIS = ["mongodb+srv://6p5e2y8_db_user:MxRFLhQ534AI3rfQ@cluster0.j9hcylx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
 REFERRAL_DB_URI = "mongodb+srv://qy8gjiw_db_user:JjryWhQV4CYtzcYo@cluster0.lkkvli8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+CLONE_DB_URI = "mongodb+srv://7859erhl_db_user:jMYPMSO4ZYmfgMfW@cluster0.tk0npfw.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 current_uri_index = 0
 
 # Centralized connection manager
@@ -113,6 +116,7 @@ banned_users_col = None
 groups_col = None
 referrals_col = None
 referred_users_col = None
+clones_col = None
 
 
 # In-memory caches for performance
@@ -316,12 +320,14 @@ def connect_to_mongo():
     Initializes connection pools for all database URIs specified in the config.
     It also sets the initial active database connection.
     """
-    global mongo_clients, db, files_col, users_col, banned_users_col, groups_col, referrals_col, referred_users_col, current_uri_index
+    global mongo_clients, db, files_col, users_col, banned_users_col, groups_col, referrals_col, referred_users_col, clones_col, current_uri_index
 
     # Consolidate all unique URIs
     all_uris = set(MONGO_URIS + GROUPS_DB_URIS)
     if REFERRAL_DB_URI:
         all_uris.add(REFERRAL_DB_URI)
+    if CLONE_DB_URI:
+        all_uris.add(CLONE_DB_URI)
 
     for uri in all_uris:
         try:
@@ -358,6 +364,18 @@ def connect_to_mongo():
                 logger.critical("Failed to connect to the Referral MongoDB URI. Referral system will not function.")
         else:
             logger.warning("REFERRAL_DB_URI not set. Referral system will be disabled.")
+
+        # Connect to the clone database
+        if CLONE_DB_URI:
+            clone_client = mongo_clients.get(CLONE_DB_URI)
+            if clone_client:
+                clone_db = clone_client["clone_db"]
+                clones_col = clone_db["clones"]
+                logger.info("Successfully connected to Clone MongoDB.")
+            else:
+                logger.critical("Failed to connect to the Clone MongoDB URI. Clone system will not function.")
+        else:
+            logger.warning("CLONE_DB_URI not set. Clone system will be disabled.")
 
         logger.info(f"Successfully connected to initial MongoDB at index {current_uri_index}.")
         return True
@@ -579,7 +597,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_id = ADMINS[0] if ADMINS else None
 
     welcome_text = (
-        f"<b>Hey, {user.mention_html()}!</b>\n\n"
         "This is an advanced and powerful filter bot."
     )
 
@@ -1105,6 +1122,59 @@ async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error fetching recent files: {e}")
         await send_and_delete_message(context, update.effective_chat.id, "❌ An error occurred while fetching recent files.")
+
+
+async def clone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to save a new bot token for cloning."""
+    asyncio.create_task(react_to_message_task(update))
+    if not context.args:
+        await send_and_delete_message(context, update.effective_chat.id, "Usage: /clone <bot_token>")
+        return
+
+    token = context.args[0]
+    if clones_col is None:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ Clone database not connected.")
+        return
+
+    try:
+        clones_col.insert_one({"_id": token, "token": token})
+        response_text = (
+            "✅ Bot token saved successfully.\n\n"
+            "To run the new clone, use the following command on your server:\n"
+            f"<code>python3 bot.py --token {token}</code>"
+        )
+        await send_and_delete_message(context, update.effective_chat.id, response_text, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Error saving clone token: {e}")
+        await send_and_delete_message(context, update.effective_chat.id, "❌ An error occurred while saving the token. It might already exist.")
+
+
+async def deletebotconnection_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to delete a bot token from the clone database."""
+    asyncio.create_task(react_to_message_task(update))
+    if update.effective_user.id not in ADMINS:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
+        return
+
+    if not context.args:
+        await send_and_delete_message(context, update.effective_chat.id, "Usage: /deletebotconnection <bot_token>")
+        return
+
+    token = context.args[0]
+    if clones_col is None:
+        await send_and_delete_message(context, update.effective_chat.id, "❌ Clone database not connected.")
+        return
+
+    try:
+        result = clones_col.delete_one({"_id": token})
+        if result.deleted_count > 0:
+            response_text = "✅ Bot token connection deleted successfully."
+        else:
+            response_text = "❌ Bot token not found in the database."
+        await send_and_delete_message(context, update.effective_chat.id, response_text)
+    except Exception as e:
+        logger.error(f"Error deleting clone token: {e}")
+        await send_and_delete_message(context, update.effective_chat.id, "❌ An error occurred while deleting the token.")
 
 
 async def delete_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2108,14 +2178,23 @@ class ServerThread(Thread):
     def shutdown(self):
         self.srv.shutdown()
 
+import argparse
+
 async def main_async():
     """The main asynchronous entry point for the bot."""
+    parser = argparse.ArgumentParser(description="Telegram Filter Bot")
+    parser.add_argument("--token", help="The Telegram bot token to use.")
+    args = parser.parse_args()
+
+    # Use the token from the command line if provided, otherwise use the one from config
+    token = args.token if args.token else BOT_TOKEN
+
     if not connect_to_mongo():
         logger.critical("Failed to connect to the initial MongoDB URI. Exiting.")
         return
 
     # Create the application instance
-    ptb_app = Application.builder().token(BOT_TOKEN).build()
+    ptb_app = Application.builder().token(token).build()
 
     # Start the Flask web server in a background thread
     server = ServerThread(app)
@@ -2154,7 +2233,9 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("deletefile", delete_file_command))
     ptb_app.add_handler(CommandHandler("findfile", find_file_command))
     ptb_app.add_handler(CommandHandler("recent", recent_command))
+    ptb_app.add_handler(CommandHandler("clone", clone_command))
     ptb_app.add_handler(CommandHandler("deleteall", delete_all_command))
+    ptb_app.add_handler(CommandHandler("deletebotconnection", deletebotconnection_command))
     ptb_app.add_handler(CommandHandler("ban", ban_user_command))
     ptb_app.add_handler(CommandHandler("unban", unban_user_command))
     ptb_app.add_handler(CommandHandler("freeforall", freeforall_command))
