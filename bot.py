@@ -27,9 +27,11 @@ import httpx
 import uuid
 import datetime
 import html
+import subprocess
 from flask import Flask
 from threading import Thread
 import os
+import sys
 import sys
 from functools import lru_cache
 from werkzeug.serving import make_server
@@ -1138,10 +1140,11 @@ async def clone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         clones_col.insert_one({"_id": token, "token": token})
+        # Start the new bot instance in the background
+        command = [sys.executable, "bot.py", "--token", token]
+        subprocess.Popen(command)
         response_text = (
-            "✅ Bot token saved successfully.\n\n"
-            "To run the new clone, use the following command on your server:\n"
-            f"<code>python3 bot.py --token {token}</code>"
+            "✅ Bot token saved and the new clone has been started successfully in the background."
         )
         await send_and_delete_message(context, update.effective_chat.id, response_text, parse_mode="HTML")
     except Exception as e:
