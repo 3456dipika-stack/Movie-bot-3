@@ -1074,7 +1074,7 @@ async def find_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to show the 10 most recently uploaded files."""
+    """Admin command to show the 20 most recently uploaded files."""
     asyncio.create_task(react_to_message_task(update))
     if not await bot_can_respond(update, context):
         return
@@ -1088,14 +1088,14 @@ async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        # Fetch the last 10 documents, sorting by ObjectId which is chronological
-        recent_files = list(files_col.find().sort("_id", -1).limit(10))
+        # Fetch the last 20 documents, sorting by ObjectId which is chronological
+        recent_files = list(files_col.find().sort("_id", -1).limit(20))
 
         if not recent_files:
             await send_and_delete_message(context, update.effective_chat.id, "❌ No files found in the database.")
             return
 
-        response_text = "📁 <b>Last 10 Uploaded Files:</b>\n\n"
+        response_text = "📁 <b>Last 20 Uploaded Files:</b>\n\n"
         for idx, file in enumerate(recent_files, start=1):
             file_name_escaped = html.escape(file['file_name'])
             response_text += f"{idx}. <code>{file_name_escaped}</code>\n"
