@@ -75,7 +75,6 @@ HELP_TEXT = (
     "• `/info` - Get bot information.\n"
     "• `/refer` - Get your referral link to earn premium access.\n"
     "• `/request <name>` - Request a file.\n"
-    "• `/clone <bot_token>` - Create a clone of the bot.\n"
     "• `/request_index` - Request a file or channel to be indexed.\n"
     "• Send any text to search for a file (admins only in private chat).\n\n"
     "**Admin Commands:**\n"
@@ -86,7 +85,6 @@ HELP_TEXT = (
     "• `/findfile <name>` - Find a file's ID by name.\n"
     "• `/recent` - Show the 10 most recently uploaded files.\n"
     "• `/deletefile <id>` - Delete a file from the database.\n"
-    "• `/deletebotconnection <bot_token>` - Delete a bot token connection.\n"
     "• `/deleteall` - Delete all files from the current database.\n"
     "• `/ban <user_id>` - Ban a user.\n"
     "• `/unban <user_id>` - Unban a user.\n"
@@ -104,7 +102,6 @@ MONGO_URIS = [
 ]
 GROUPS_DB_URIS = ["mongodb+srv://6p5e2y8_db_user:MxRFLhQ534AI3rfQ@cluster0.j9hcylx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
 REFERRAL_DB_URI = "mongodb+srv://qy8gjiw_db_user:JjryWhQV4CYtzcYo@cluster0.lkkvli8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-CLONE_DB_URI = "mongodb+srv://7859erhl_db_user:jMYPMSO4ZYmfgMfW@cluster0.tk0npfw.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 current_uri_index = 0
 
 # Centralized connection manager
@@ -118,12 +115,10 @@ banned_users_col = None
 groups_col = None
 referrals_col = None
 referred_users_col = None
-clones_col = None
 
 
 # In-memory caches for performance
 banned_user_cache = {}    # {user_id: bool}
-pids = {}                 # {token: pid}
 
 
 # Logging setup with an in-memory buffer for the /log command
@@ -318,22 +313,6 @@ async def delete_message_after_delay(context, chat_id, message_id, delay):
         logger.warning(f"Failed to auto-delete message {message_id} from chat {chat_id}: {e}")
 
 
-def load_pids():
-    """Load PIDs of running clones from the database."""
-    if clones_col is not None:
-        for clone in clones_col.find({}, {"pid": 1, "_id": 1}):
-            pid = clone.get("pid")
-            token = clone.get("_id")
-            if pid and token:
-                # Check if the process is still running
-                try:
-                    os.kill(pid, 0)
-                    pids[token] = pid
-                except OSError:
-                    # Process is not running, so remove it from the database
-                    clones_col.delete_one({"_id": token})
-
-
 def connect_to_mongo():
     """
     Initializes connection pools for all database URIs specified in the config.
@@ -345,8 +324,6 @@ def connect_to_mongo():
     all_uris = set(MONGO_URIS + GROUPS_DB_URIS)
     if REFERRAL_DB_URI:
         all_uris.add(REFERRAL_DB_URI)
-    if CLONE_DB_URI:
-        all_uris.add(CLONE_DB_URI)
 
     for uri in all_uris:
         try:
@@ -383,18 +360,6 @@ def connect_to_mongo():
                 logger.critical("Failed to connect to the Referral MongoDB URI. Referral system will not function.")
         else:
             logger.warning("REFERRAL_DB_URI not set. Referral system will be disabled.")
-
-        # Connect to the clone database
-        if CLONE_DB_URI:
-            clone_client = mongo_clients.get(CLONE_DB_URI)
-            if clone_client:
-                clone_db = clone_client["clone_db"]
-                clones_col = clone_db["clones"]
-                logger.info("Successfully connected to Clone MongoDB.")
-            else:
-                logger.critical("Failed to connect to the Clone MongoDB URI. Clone system will not function.")
-        else:
-            logger.warning("CLONE_DB_URI not set. Clone system will be disabled.")
 
         logger.info(f"Successfully connected to initial MongoDB at index {current_uri_index}.")
         return True
@@ -1141,78 +1106,6 @@ async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error fetching recent files: {e}")
         await send_and_delete_message(context, update.effective_chat.id, "❌ An error occurred while fetching recent files.")
-
-
-async def clone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to save a new bot token for cloning."""
-    asyncio.create_task(react_to_message_task(update))
-    if not context.args:
-        await send_and_delete_message(context, update.effective_chat.id, "Usage: /clone <bot_token>")
-        return
-
-    token = context.args[0]
-    if clones_col is None:
-        await send_and_delete_message(context, update.effective_chat.id, "❌ Clone database not connected.")
-        return
-
-    try:
-        if clones_col.find_one({"_id": token}):
-            await send_and_delete_message(context, update.effective_chat.id, "❌ This bot token is already cloned.")
-            return
-
-        # Ensure the clones directory exists
-        if not os.path.exists("clones"):
-            os.makedirs("clones")
-
-        log_file_path = f"clones/{token}.log"
-        with open(log_file_path, "w") as log_file:
-            command = [sys.executable, "bot.py", "--token", token]
-            process = subprocess.Popen(command, stdout=log_file, stderr=log_file)
-        clones_col.insert_one({"_id": token, "token": token, "pid": process.pid})
-        pids[token] = process.pid
-        response_text = (
-            "✅ Bot token saved and the new clone has been started successfully in the background."
-        )
-        await send_and_delete_message(context, update.effective_chat.id, response_text, parse_mode="HTML")
-    except Exception as e:
-        logger.error(f"Error saving clone token: {e}")
-        await send_and_delete_message(context, update.effective_chat.id, "❌ An error occurred while saving the token. It might already exist.")
-
-
-async def deletebotconnection_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to delete a bot token from the clone database."""
-    asyncio.create_task(react_to_message_task(update))
-    if update.effective_user.id not in ADMINS:
-        await send_and_delete_message(context, update.effective_chat.id, "❌ You do not have permission to use this command.")
-        return
-
-    if not context.args:
-        await send_and_delete_message(context, update.effective_chat.id, "Usage: /deletebotconnection <bot_token>")
-        return
-
-    token = context.args[0]
-    if clones_col is None:
-        await send_and_delete_message(context, update.effective_chat.id, "❌ Clone database not connected.")
-        return
-
-    try:
-        clone_data = clones_col.find_one_and_delete({"_id": token})
-        if clone_data:
-            pid = clone_data.get("pid")
-            if pid:
-                try:
-                    os.kill(pid, 15)
-                except ProcessLookupError:
-                    pass  # Process already dead
-            if token in pids:
-                del pids[token]
-            response_text = "✅ Bot token connection deleted and process terminated successfully."
-        else:
-            response_text = "❌ Bot token not found in the database."
-        await send_and_delete_message(context, update.effective_chat.id, response_text)
-    except Exception as e:
-        logger.error(f"Error deleting clone token: {e}")
-        await send_and_delete_message(context, update.effective_chat.id, "❌ An error occurred while deleting the token.")
 
 
 async def delete_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2231,8 +2124,6 @@ async def main_async():
         logger.critical("Failed to connect to the initial MongoDB URI. Exiting.")
         return
 
-    load_pids()
-
     # Create the application instance
     ptb_app = Application.builder().token(token).build()
 
@@ -2273,9 +2164,7 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("deletefile", delete_file_command))
     ptb_app.add_handler(CommandHandler("findfile", find_file_command))
     ptb_app.add_handler(CommandHandler("recent", recent_command))
-    ptb_app.add_handler(CommandHandler("clone", clone_command))
     ptb_app.add_handler(CommandHandler("deleteall", delete_all_command))
-    ptb_app.add_handler(CommandHandler("deletebotconnection", deletebotconnection_command))
     ptb_app.add_handler(CommandHandler("ban", ban_user_command))
     ptb_app.add_handler(CommandHandler("unban", unban_user_command))
     ptb_app.add_handler(CommandHandler("freeforall", freeforall_command))
