@@ -556,39 +556,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.effective_user
 
+    # Save user info now, regardless of deep link status
+    await save_user_info(user)
+
     # Handle deep links
     if context.args:
         payload = context.args[0]
 
-        if payload.startswith("get_"):
+        # File deep link
+        if payload.startswith("files_"):
             file_id_str = payload.split("_", 1)[1]
             await handle_file_request(user, file_id_str, context, update.effective_chat.id)
             return
 
-        # 1. Referral Link Handling
-        if payload.startswith("ref_"):
+        # Referral deep link
+        elif payload.startswith("ref_"):
             try:
                 referrer_id = int(payload.split("_", 1)[1])
-
-                # Check if the user has already been referred
                 is_already_referred = referred_users_col is not None and referred_users_col.find_one({"_id": user.id}) is not None
-
                 if referrer_id != user.id and not is_already_referred:
                     if referrals_col is not None and referred_users_col is not None:
-                        # Increment referrer's count
-                        referrals_col.update_one(
-                            {"_id": referrer_id},
-                            {"$inc": {"referral_count": 1}},
-                            upsert=True
-                        )
-
-                        # Mark the user as referred
+                        referrals_col.update_one({"_id": referrer_id}, {"$inc": {"referral_count": 1}}, upsert=True)
                         referred_users_col.insert_one({"_id": user.id})
-
-                        # Check if they hit the target
                         referrer_data = referrals_col.find_one({"_id": referrer_id})
                         if referrer_data and referrer_data.get("referral_count", 0) >= 10:
-                            # Grant premium and reset count
                             referrals_col.update_one(
                                 {"_id": referrer_id},
                                 {"$set": {
@@ -596,7 +587,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     "referral_count": 0
                                 }}
                             )
-                            # Notify referrer
                             try:
                                 await context.bot.send_message(
                                     chat_id=referrer_id,
@@ -606,15 +596,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 logger.warning(f"Could not notify referrer {referrer_id} about premium status: {e}")
             except (IndexError, ValueError) as e:
                 logger.error(f"Could not parse referral link payload: {payload} - {e}")
-            # The new user will fall through to the standard welcome message.
+            # After handling the referral, do not show the main start message.
+            # The user has already started the bot.
+            return
 
-        # 2. Verification Link Handling (REMOVED)
-        pass
-
-    # Save user info now. If they were referred, they are now marked as "existing".
-    await save_user_info(user)
-
-    # Standard start message if no deep link or after referral processing
+    # Standard start message only if there are no args
     bot_username = context.bot.username
     owner_id = ADMINS[0] if ADMINS else None
 
@@ -1997,7 +1983,7 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
         button_text = f"[{file_size}] {file_name_escaped}"
 
         # Create the deep link URL
-        deep_link_url = f"https://t.me/{bot_username}?start=get_{file_obj_id}"
+        deep_link_url = f"https://t.me/{bot_username}?start=files_{file_obj_id}"
 
         buttons.append(
             [InlineKeyboardButton(button_text, url=deep_link_url)]
