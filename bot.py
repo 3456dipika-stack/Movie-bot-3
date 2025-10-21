@@ -243,6 +243,39 @@ async def is_banned(user_id):
     # Default to not banned if DB is unavailable
     return False
 
+async def handle_file_request(user, file_id_str, context: ContextTypes.DEFAULT_TYPE, source_chat_id: int):
+    """A centralized function to handle a file request from a user."""
+    if await is_banned(user.id):
+        await send_and_delete_message(context, source_chat_id, "❌ You are banned from using this bot.")
+        return
+
+    await save_user_info(user)
+    if not await check_member_status(user.id, context):
+        buttons = [[InlineKeyboardButton(f"Join {ch['name']}", url=ch['link'])] for ch in PROMO_CHANNELS]
+        keyboard = InlineKeyboardMarkup(buttons)
+        await send_and_delete_message(context, source_chat_id, "❌ You must join ALL our channels to use this bot!", reply_markup=keyboard)
+        return
+
+    file_data = None
+    for uri in MONGO_URIS:
+        client = mongo_clients.get(uri)
+        if not client:
+            continue
+        try:
+            temp_db = client["telegram_files"]
+            temp_files_col = temp_db["files"]
+            file_data = temp_files_col.find_one({"_id": ObjectId(file_id_str)})
+            if file_data:
+                break
+        except Exception as e:
+            logger.error(f"DB Error while fetching file {file_id_str}: {e}")
+
+    if file_data:
+        asyncio.create_task(send_file_task(user.id, source_chat_id, context, file_data, user.mention_html()))
+    else:
+        await send_and_delete_message(context, source_chat_id, "❌ File not found or an error occurred.")
+
+
 async def bot_can_respond(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """
     Check if the bot should respond in a group chat.
@@ -526,6 +559,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Handle deep links
     if context.args:
         payload = context.args[0]
+
+        if payload.startswith("get_"):
+            file_id_str = payload.split("_", 1)[1]
+            await handle_file_request(user, file_id_str, context, update.effective_chat.id)
+            return
 
         # 1. Referral Link Handling
         if payload.startswith("ref_"):
@@ -1939,6 +1977,7 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
     """Sends or edits a message to show a paginated list of search results."""
     start, end = page * 10, (page + 1) * 10
     page_results = results[start:end]
+    bot_username = context.bot.username
 
     # Escape the query string for HTML
     escaped_query = html.escape(query)
@@ -1956,8 +1995,12 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
         # Escape filename for HTML
         file_name_escaped = html.escape(file['file_name'][:40])
         button_text = f"[{file_size}] {file_name_escaped}"
+
+        # Create the deep link URL
+        deep_link_url = f"https://t.me/{bot_username}?start=get_{file_obj_id}"
+
         buttons.append(
-            [InlineKeyboardButton(button_text, callback_data=f"get_{file_obj_id}")]
+            [InlineKeyboardButton(button_text, url=deep_link_url)]
         )
 
     # Add the promotional text at the end
@@ -1980,7 +2023,7 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
 
     try:
         if message_id:
-            await context.bot.edit_message_text(
+            sent_message = await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
                 text=text,
@@ -1988,13 +2031,15 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
                 parse_mode="HTML"
             )
         elif reply_to_message_id:
-            await context.bot.send_message(
+            sent_message = await context.bot.send_message(
                 chat_id=chat_id,
                 text=text,
                 reply_markup=reply_markup,
                 parse_mode="HTML",
                 reply_to_message_id=reply_to_message_id
             )
+        # Schedule the search results for deletion
+        asyncio.create_task(delete_message_after_delay(context, chat_id, sent_message.message_id, 5 * 60))
     except TelegramError as e:
         logger.error(f"Error sending or editing search results page: {e}")
 
@@ -2019,29 +2064,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     user_id = query.from_user.id
 
-    # --- File Request Logic (get_ or sendall_) ---
-    if data.startswith("get_"):
-        file_id_str = data.split("_", 1)[1]
-        file_data = None
-        for uri in MONGO_URIS:
-            client = mongo_clients.get(uri)
-            if not client:
-                continue
-            try:
-                temp_db = client["telegram_files"]
-                temp_files_col = temp_db["files"]
-                file_data = temp_files_col.find_one({"_id": ObjectId(file_id_str)})
-                if file_data: break
-            except Exception as e:
-                logger.error(f"DB Error while fetching file {file_id_str} for verified user: {e}")
-
-        if file_data:
-            asyncio.create_task(send_file_task(user_id, query.message.chat.id, context, file_data, query.from_user.mention_html()))
-        else:
-            await send_and_delete_message(context, user_id, "❌ File not found.")
-
     # --- Send All Files (Batch) ---
-    elif data.startswith("sendall_"):
+    if data.startswith("sendall_"):
         _, page_str, search_query = data.split("_", 2)
         page = int(page_str)
         final_results = context.user_data.get('search_results')
