@@ -49,7 +49,7 @@ PM_SEARCH_ENABLED = True   # Controls whether non-admins can search in PM
 
 # Words to ignore in search queries for better matching
 SEARCH_STOP_WORDS = [
-    "movie", "movies", "web", "series", "hd", "720p", "1080p", "480p", "4k",
+   "tamil", "telegu", "Bengali", "movie", "movies", "web", "series", "hd", "720p", "1080p", "480p", "4k",
     "hindi", "english", "dual", "audio", "bluray", "webrip", "hdrip", "hdtc"
 ]
 
