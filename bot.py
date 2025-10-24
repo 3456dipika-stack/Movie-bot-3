@@ -1938,8 +1938,8 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Sort the results by score in descending order
     sorted_results = sorted(results_with_score, key=lambda x: x[1], reverse=True)
 
-    # Extract the file documents from the sorted list and limit to the top 50
-    final_results = [result[0] for result in sorted_results[:50]]
+    # Extract the file documents from the sorted list
+    final_results = [result[0] for result in sorted_results]
 
     if not final_results:
         try:
