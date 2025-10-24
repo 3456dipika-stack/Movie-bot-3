@@ -1902,13 +1902,15 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"❌ No files found for your query: <b>{html.escape(raw_query)}</b>\n\n"
                 "This might be due to a spelling mistake. You can use the button below to double-check on Google."
             )
-            await context.bot.edit_message_text(
+            edited_message = await context.bot.edit_message_text(
                 chat_id=status_message.chat.id,
                 message_id=status_message.message_id,
                 text=no_results_text,
                 reply_markup=keyboard,
                 parse_mode="HTML"
             )
+            # Schedule the "no results" message for deletion
+            asyncio.create_task(delete_message_after_delay(context, edited_message.chat.id, edited_message.message_id, 5 * 60))
         except TelegramError:
             pass # Ignore if message was deleted
         return
