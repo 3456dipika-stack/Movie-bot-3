@@ -309,9 +309,10 @@ async def send_and_delete_message(
     text: str,
     reply_markup=None,
     parse_mode=None,
-    reply_to_message_id=None
+    reply_to_message_id=None,
+    auto_delete: bool = True
 ):
-    """Sends a message and schedules its deletion after 5 minutes."""
+    """Sends a message and optionally schedules its deletion after 5 minutes."""
     try:
         if reply_to_message_id:
             sent_message = await context.bot.send_message(
@@ -329,8 +330,10 @@ async def send_and_delete_message(
                 parse_mode=parse_mode
             )
 
-        # Schedule deletion
-        deletion_task = asyncio.create_task(delete_message_after_delay(context, chat_id, sent_message.message_id, 5 * 60))
+        deletion_task = None
+        if auto_delete:
+            deletion_task = asyncio.create_task(delete_message_after_delay(context, chat_id, sent_message.message_id, 5 * 60))
+
         return sent_message, deletion_task
     except TelegramError as e:
         logger.error(f"Error in send_and_delete_message to chat {chat_id}: {e}")
@@ -603,9 +606,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Standard start message only if there are no args
     bot_username = context.bot.username
     owner_id = ADMINS[0] if ADMINS else None
+    user_mention = user.mention_html()
 
     welcome_text = (
-        "This is an advanced and powerful filter bot."
+        f"👋 Hello {user_mention}, I am an advanced filter bot.\n\n"
+        "I can help you find files in this chat with ease. Just send me the name of the file you're looking for!\n\n"
+        "Click the buttons below to learn more about how I work."
     )
 
     keyboard = [
@@ -1291,7 +1297,7 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent_count = 0
     failed_count = 0
 
-    await send_and_delete_message(context, update.effective_chat.id, f"🚀 Starting broadcast to {len(user_ids)} users...")
+    await send_and_delete_message(context, update.effective_chat.id, f"🚀 Starting broadcast to {len(user_ids)} users...", auto_delete=True)
 
     for uid in user_ids:
         try:
@@ -1305,7 +1311,7 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             failed_count += 1
             logger.error(f"Unknown error sending broadcast to user {uid}: {e}")
 
-    await send_and_delete_message(context, update.effective_chat.id, f"✅ Broadcast complete!\n\nSent to: {sent_count}\nFailed: {failed_count}")
+    await send_and_delete_message(context, update.effective_chat.id, f"✅ Broadcast complete!\n\nSent to: {sent_count}\nFailed: {failed_count}", auto_delete=True)
 
 
 async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1365,7 +1371,7 @@ async def grp_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TY
     # Send message to each group
     sent_count = 0
     failed_count = 0
-    await send_and_delete_message(context, update.effective_chat.id, f"🚀 Starting group broadcast to {len(all_group_ids)} groups...")
+    await send_and_delete_message(context, update.effective_chat.id, f"🚀 Starting group broadcast to {len(all_group_ids)} groups...", auto_delete=True)
 
     for group_id in all_group_ids:
         try:
@@ -1383,7 +1389,7 @@ async def grp_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TY
             logger.error(f"Failed to send broadcast to group {group_id}: {e}")
             failed_count += 1
 
-    await send_and_delete_message(context, update.effective_chat.id, f"✅ Group broadcast complete!\n\nSent to: {sent_count} groups\nFailed: {failed_count} groups")
+    await send_and_delete_message(context, update.effective_chat.id, f"✅ Group broadcast complete!\n\nSent to: {sent_count} groups\nFailed: {failed_count} groups", auto_delete=True)
 
 
 async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1888,10 +1894,20 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not preliminary_results:
         try:
+            google_search_url = f"https://www.google.com/search?q={raw_query.replace(' ', '+')}"
+            keyboard = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("Check Spelling on Google", url=google_search_url)]]
+            )
+            no_results_text = (
+                f"❌ No files found for your query: <b>{html.escape(raw_query)}</b>\n\n"
+                "This might be due to a spelling mistake. You can use the button below to double-check on Google."
+            )
             await context.bot.edit_message_text(
                 chat_id=status_message.chat.id,
                 message_id=status_message.message_id,
-                text="❌ No relevant files found. For your query contact @kaustavhibot"
+                text=no_results_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
             )
         except TelegramError:
             pass # Ignore if message was deleted
