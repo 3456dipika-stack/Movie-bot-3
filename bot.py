@@ -35,6 +35,7 @@ import sys
 import sys
 from functools import lru_cache
 from werkzeug.serving import make_server
+import pytz
 
 # ========================
 # CONFIG
@@ -560,6 +561,61 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
     except Exception:
         logger.exception(f"An unexpected error occurred in send_all_files_task for user {user_id}")
         await send_and_delete_message(context, source_chat_id, "❌ An unexpected error occurred. Please try again later.")
+
+
+async def daily_greeting_task(context: ContextTypes.DEFAULT_TYPE):
+    """A background task to send timezone-aware greetings to all users."""
+    kolkata_tz = pytz.timezone("Asia/Kolkata")
+    last_greeting_sent = None
+    last_greeting_date = None
+
+    while True:
+        now = datetime.datetime.now(kolkata_tz)
+        hour = now.hour
+        current_date = now.date()
+
+        # Reset the greeting status if the day has changed
+        if last_greeting_date and last_greeting_date != current_date:
+            last_greeting_sent = None
+            logger.info("New day, resetting daily greeting status.")
+
+        greeting = None
+        emoji = None
+
+        if 6 <= hour < 12 and last_greeting_sent != "morning":
+            greeting = "Good Morning"
+            emoji = "☀️"
+            last_greeting_sent = "morning"
+        elif 12 <= hour < 17 and last_greeting_sent != "noon":
+            greeting = "Good Noon"
+            emoji = "😎"
+            last_greeting_sent = "noon"
+        elif 17 <= hour < 22 and last_greeting_sent != "evening":
+            greeting = "Good Evening"
+            emoji = "🌆"
+            last_greeting_sent = "evening"
+        elif (22 <= hour or hour < 6) and last_greeting_sent != "night":
+             greeting = "Good Night"
+             emoji = "🌙"
+             last_greeting_sent = "night"
+
+
+        if greeting and emoji:
+            last_greeting_date = current_date  # Record the date of the last sent greeting
+            if users_col is not None:
+                users_cursor = users_col.find({}, {"_id": 1})
+                user_ids = [user["_id"] for user in users_cursor]
+                message = f"{greeting} {emoji}"
+                logger.info(f"Sending '{greeting}' to {len(user_ids)} users.")
+                for user_id in user_ids:
+                    try:
+                        await context.bot.send_message(chat_id=user_id, text=message)
+                        await asyncio.sleep(0.1)  # Rate limiting
+                    except Exception as e:
+                        logger.warning(f"Could not send daily greeting to user {user_id}: {e}")
+
+        await asyncio.sleep(60 * 30)  # Check every 30 minutes
+
 
 # ========================
 # COMMAND HANDLERS
@@ -1997,7 +2053,7 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, user_mention: str, message_id: int = None, reply_to_message_id: int = None):
     """Sends or edits a message to show a paginated list of search results."""
-    start, end = page * 10, (page + 1) * 10
+    start, end = page * 6, (page + 1) * 6
     page_results = results[start:end]
     bot_username = context.bot.username
 
@@ -2005,7 +2061,7 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
     escaped_query = html.escape(query)
     text = (
         f"Hey {user_mention}, here are the top {len(results)} results for: <b>{escaped_query}</b>\n"
-        f"(Page {page + 1} / {math.ceil(len(results) / 10)}) (Sorted by Relevance)"
+        f"(Page {page + 1} / {math.ceil(len(results) / 6)}) (Sorted by Relevance)"
     )
     buttons = []
 
@@ -2094,7 +2150,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not final_results:
             await send_and_delete_message(context, user_id, "❌ Search session expired. Please search again.")
             return
-        files_to_send = final_results[page * 10:(page + 1) * 10]
+        files_to_send = final_results[page * 6:(page + 1) * 6]
         if not files_to_send:
             await send_and_delete_message(context, user_id, "❌ No files found on this page to send.")
             return
@@ -2252,6 +2308,9 @@ async def main_async():
 
     # Keep the bot running indefinitely until a signal is received
     logger.info("Bot is running. Press Ctrl-C to stop.")
+
+    # Start the daily greeting task
+    asyncio.create_task(daily_greeting_task(ptb_app))
 
     # Broadcast restart message if the bot was restarted via the command
     if "--restarted" in sys.argv:
