@@ -53,6 +53,9 @@ SEARCH_STOP_WORDS = [
     "hindi", "english", "dual", "audio", "bluray", "webrip", "hdrip", "hdtc"
 ]
 
+# Characters to remove from filenames and search queries for flexible matching
+CHARS_TO_REMOVE = r"~±×÷•°`_{}@#₹%&*-=()!\"':+/?৳$£€©®^π[]@#₹%&*-=()\"<>;|\\¿"
+
 # Custom promotional message (Simplified as per the last request)
 REACTIONS = ["👀", "😱", "🔥", "😍", "🎉", "🥰", "😇", "⚡"]
 PROMO_CHANNELS = [
@@ -214,6 +217,21 @@ def format_filename_for_display(filename: str) -> str:
     else:
         # Fallback if no space is found (e.g., a single long word)
         return filename[:mid] + '\n' + filename[mid:]
+
+
+def sanitize_text(text: str) -> str:
+    """Sanitizes a string by removing special characters and normalizing spaces."""
+    if not text:
+        return ""
+    # A translation table is more efficient than repeated re.sub for this task
+    translator = str.maketrans("", "", CHARS_TO_REMOVE)
+    sanitized = text.translate(translator)
+    # Also replace common separators that might not be in the list with a space
+    sanitized = sanitized.replace("_", " ").replace(".", " ").replace("-", " ")
+    # Condense multiple spaces into one and strip leading/trailing spaces
+    name = re.sub(r"\s+", " ", sanitized).strip()
+    return name
+
 
 async def check_member_status(user_id, context: ContextTypes.DEFAULT_TYPE):
     """Check if the user is a member of ALL required promotional channels."""
@@ -1415,7 +1433,7 @@ async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
 
-            clean_name = raw_name.replace("_", " ").replace(".", " ").replace("-", " ") if raw_name else "Unknown"
+            clean_name = sanitize_text(raw_name) if raw_name else "Unknown"
 
             saved = False
             for i in range(len(MONGO_URIS)):
@@ -1549,7 +1567,7 @@ async def index_channel_task(context: ContextTypes.DEFAULT_TYPE, channel_id: int
 
             # Get filename (note: original caption is lost on forward)
             raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
-            clean_name = raw_name.replace("_", " ").replace(".", " ").replace("-", " ") if raw_name else "Unknown"
+            clean_name = sanitize_text(raw_name) if raw_name else "Unknown"
 
             # Save metadata to all file databases for redundancy
             saved_to_any_db = False
@@ -1657,7 +1675,7 @@ async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
 
-    clean_name = raw_name.replace("_", " ").replace(".", " ").replace("-", " ") if raw_name else "Unknown"
+    clean_name = sanitize_text(raw_name) if raw_name else "Unknown"
 
     global current_uri_index, db, files_col, users_col, banned_users_col
 
@@ -1726,7 +1744,7 @@ async def save_file_from_channel(update: Update, context: ContextTypes.DEFAULT_T
     else:
         raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
 
-    clean_name = raw_name.replace("_", " ").replace(".", " ").replace("-", " ") if raw_name else "Unknown"
+    clean_name = sanitize_text(raw_name) if raw_name else "Unknown"
 
     global current_uri_index, db, files_col, users_col, banned_users_col
 
@@ -1826,8 +1844,8 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     raw_query = update.message.text.strip()
-    # Normalize query for better fuzzy search
-    normalized_query = raw_query.replace("_", " ").replace(".", " ").replace("-", " ").strip()
+    # Sanitize and normalize query for better fuzzy search
+    normalized_query = sanitize_text(raw_query)
 
     # Filter out stop words for more accurate searching
     query_words = normalized_query.lower().split()
