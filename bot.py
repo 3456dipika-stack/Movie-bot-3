@@ -226,7 +226,8 @@ def sanitize_text(text: str) -> str:
     if not text:
         return ""
     # A translation table is more efficient than repeated re.sub for this task
-    translator = str.maketrans("", "", CHARS_TO_REMOVE)
+    # Replace each character in CHARS_TO_REMOVE with a space
+    translator = str.maketrans(CHARS_TO_REMOVE, ' ' * len(CHARS_TO_REMOVE))
     sanitized = text.translate(translator)
     # Also replace common separators that might not be in the list with a space
     sanitized = sanitized.replace("_", " ").replace(".", " ").replace("-", " ")
