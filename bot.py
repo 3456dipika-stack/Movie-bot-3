@@ -15,6 +15,7 @@ from telegram.ext import (
     ChatMemberHandler,
     ContextTypes,
     filters,
+    PicklePersistence,
 )
 from telegram.error import TelegramError
 from fuzzywuzzy import fuzz
@@ -566,18 +567,27 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
 async def daily_greeting_task(context: ContextTypes.DEFAULT_TYPE):
     """A background task to send timezone-aware greetings to all users."""
     kolkata_tz = pytz.timezone("Asia/Kolkata")
-    last_greeting_sent = None
-    last_greeting_date = None
 
     while True:
         now = datetime.datetime.now(kolkata_tz)
         hour = now.hour
-        current_date = now.date()
 
-        # Reset the greeting status if the day has changed
-        if last_greeting_date and last_greeting_date != current_date:
+        # Define a "logical date" which considers the day to start at 6 AM.
+        # This prevents the "Good Night" message from being sent twice across midnight.
+        logical_date = now.date()
+        if hour < 6:
+            logical_date -= datetime.timedelta(days=1)
+
+        # Fetch the last known state from bot_data
+        last_greeting_sent = context.bot_data.get("last_greeting_sent")
+        last_greeting_date_str = context.bot_data.get("last_greeting_date")
+        last_greeting_date = datetime.datetime.strptime(last_greeting_date_str, "%Y-%m-%d").date() if last_greeting_date_str else None
+
+        # Reset the greeting status if the logical day has changed
+        if last_greeting_date and last_greeting_date != logical_date:
             last_greeting_sent = None
-            logger.info("New day, resetting daily greeting status.")
+            context.bot_data["last_greeting_sent"] = None
+            logger.info(f"New logical day ({logical_date}), resetting daily greeting status.")
 
         greeting = None
         emoji = None
@@ -601,7 +611,10 @@ async def daily_greeting_task(context: ContextTypes.DEFAULT_TYPE):
 
 
         if greeting and emoji:
-            last_greeting_date = current_date  # Record the date of the last sent greeting
+            # Persist the new state using the logical_date
+            context.bot_data["last_greeting_sent"] = last_greeting_sent
+            context.bot_data["last_greeting_date"] = logical_date.isoformat()
+
             if users_col is not None:
                 users_cursor = users_col.find({}, {"_id": 1})
                 user_ids = [user["_id"] for user in users_cursor]
@@ -1371,7 +1384,7 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent_count = 0
     failed_count = 0
 
-    await send_and_delete_message(context, update.effective_chat.id, f"🚀 Starting broadcast to {len(user_ids)} users...", auto_delete=True)
+    await send_and_delete_message(context, update.effective_chat.id, f"🚀 Starting broadcast to {len(user_ids)} users...", auto_delete=False)
 
     for uid in user_ids:
         try:
@@ -1385,7 +1398,7 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             failed_count += 1
             logger.error(f"Unknown error sending broadcast to user {uid}: {e}")
 
-    await send_and_delete_message(context, update.effective_chat.id, f"✅ Broadcast complete!\n\nSent to: {sent_count}\nFailed: {failed_count}", auto_delete=True)
+    await send_and_delete_message(context, update.effective_chat.id, f"✅ Broadcast complete!\n\nSent to: {sent_count}\nFailed: {failed_count}", auto_delete=False)
 
 
 async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1445,7 +1458,7 @@ async def grp_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TY
     # Send message to each group
     sent_count = 0
     failed_count = 0
-    await send_and_delete_message(context, update.effective_chat.id, f"🚀 Starting group broadcast to {len(all_group_ids)} groups...", auto_delete=True)
+    await send_and_delete_message(context, update.effective_chat.id, f"🚀 Starting group broadcast to {len(all_group_ids)} groups...", auto_delete=False)
 
     for group_id in all_group_ids:
         try:
@@ -1463,7 +1476,7 @@ async def grp_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TY
             logger.error(f"Failed to send broadcast to group {group_id}: {e}")
             failed_count += 1
 
-    await send_and_delete_message(context, update.effective_chat.id, f"✅ Group broadcast complete!\n\nSent to: {sent_count} groups\nFailed: {failed_count} groups", auto_delete=True)
+    await send_and_delete_message(context, update.effective_chat.id, f"✅ Group broadcast complete!\n\nSent to: {sent_count} groups\nFailed: {failed_count} groups", auto_delete=False)
 
 
 async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2226,8 +2239,9 @@ async def main_async():
         logger.critical("Failed to connect to the initial MongoDB URI. Exiting.")
         return
 
-    # Create the application instance
-    ptb_app = Application.builder().token(token).build()
+    # Create the application instance with persistence
+    persistence = PicklePersistence(filepath="bot_persistence.pickle")
+    ptb_app = Application.builder().token(token).persistence(persistence).build()
 
     # Start the Flask web server in a background thread
     server = ServerThread(app)
