@@ -36,7 +36,6 @@ import sys
 import sys
 from functools import lru_cache
 from werkzeug.serving import make_server
-import pytz
 
 # ========================
 # CONFIG
@@ -565,71 +564,6 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
         await send_and_delete_message(context, source_chat_id, "❌ An unexpected error occurred. Please try again later.")
 
 
-async def daily_greeting_task(context: ContextTypes.DEFAULT_TYPE):
-    """A background task to send timezone-aware greetings to all users."""
-    kolkata_tz = pytz.timezone("Asia/Kolkata")
-
-    while True:
-        now = datetime.datetime.now(kolkata_tz)
-        hour = now.hour
-
-        # Define a "logical date" which considers the day to start at 6 AM.
-        # This prevents the "Good Night" message from being sent twice across midnight.
-        logical_date = now.date()
-        if hour < 6:
-            logical_date -= datetime.timedelta(days=1)
-
-        # Fetch the last known state from bot_data
-        last_greeting_sent = context.bot_data.get("last_greeting_sent")
-        last_greeting_date_str = context.bot_data.get("last_greeting_date")
-        last_greeting_date = datetime.datetime.strptime(last_greeting_date_str, "%Y-%m-%d").date() if last_greeting_date_str else None
-
-        # Reset the greeting status if the logical day has changed
-        if last_greeting_date and last_greeting_date != logical_date:
-            last_greeting_sent = None
-            context.bot_data["last_greeting_sent"] = None
-            logger.info(f"New logical day ({logical_date}), resetting daily greeting status.")
-
-        greeting = None
-        emoji = None
-
-        if 6 <= hour < 12 and last_greeting_sent != "morning":
-            greeting = "Good Morning"
-            emoji = "☀️"
-            last_greeting_sent = "morning"
-        elif 12 <= hour < 17 and last_greeting_sent != "noon":
-            greeting = "Good Noon"
-            emoji = "😎"
-            last_greeting_sent = "noon"
-        elif 17 <= hour < 22 and last_greeting_sent != "evening":
-            greeting = "Good Evening"
-            emoji = "🌆"
-            last_greeting_sent = "evening"
-        elif (22 <= hour or hour < 6) and last_greeting_sent != "night":
-             greeting = "Good Night"
-             emoji = "🌙"
-             last_greeting_sent = "night"
-
-
-        if greeting and emoji:
-            # Persist the new state using the logical_date
-            context.bot_data["last_greeting_sent"] = last_greeting_sent
-            context.bot_data["last_greeting_date"] = logical_date.isoformat()
-
-            if users_col is not None:
-                users_cursor = users_col.find({}, {"_id": 1})
-                user_ids = [user["_id"] for user in users_cursor]
-                message = f"{greeting} {emoji}"
-                logger.info(f"Sending '{greeting}' to {len(user_ids)} users.")
-                for user_id in user_ids:
-                    try:
-                        sent_message = await context.bot.send_message(chat_id=user_id, text=message)
-                        asyncio.create_task(delete_message_after_delay(context, user_id, sent_message.message_id, 30 * 60))
-                        await asyncio.sleep(0.1)  # Rate limiting
-                    except Exception as e:
-                        logger.warning(f"Could not send daily greeting to user {user_id}: {e}")
-
-        await asyncio.sleep(60 * 30)  # Check every 30 minutes
 
 
 # ========================
@@ -2325,8 +2259,6 @@ async def main_async():
     # Keep the bot running indefinitely until a signal is received
     logger.info("Bot is running. Press Ctrl-C to stop.")
 
-    # Start the daily greeting task
-    asyncio.create_task(daily_greeting_task(ptb_app))
 
     # Broadcast restart message if the bot was restarted via the command
     if "--restarted" in sys.argv:
