@@ -623,7 +623,8 @@ async def daily_greeting_task(context: ContextTypes.DEFAULT_TYPE):
                 logger.info(f"Sending '{greeting}' to {len(user_ids)} users.")
                 for user_id in user_ids:
                     try:
-                        await context.bot.send_message(chat_id=user_id, text=message)
+                        sent_message = await context.bot.send_message(chat_id=user_id, text=message)
+                        asyncio.create_task(delete_message_after_delay(context, user_id, sent_message.message_id, 30 * 60))
                         await asyncio.sleep(0.1)  # Rate limiting
                     except Exception as e:
                         logger.warning(f"Could not send daily greeting to user {user_id}: {e}")
