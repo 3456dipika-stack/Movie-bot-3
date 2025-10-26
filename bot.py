@@ -2042,17 +2042,17 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context=context,
         query=raw_query,
         user_mention=user.mention_html(),
-        owner_user_id=user.id,  # Pass the original user's ID
         reply_to_message_id=update.message.message_id
     )
 
 
-async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, user_mention: str, owner_user_id: int, message_id: int = None, reply_to_message_id: int = None):
-    """Sends or edits a message to show a paginated list of search results with ownership."""
+async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, user_mention: str, message_id: int = None, reply_to_message_id: int = None):
+    """Sends or edits a message to show a paginated list of search results."""
     start, end = page * 6, (page + 1) * 6
     page_results = results[start:end]
     bot_username = context.bot.username
 
+    # Escape the query string for HTML
     escaped_query = html.escape(query)
     text = (
         f"Hey {user_mention}, here are the top {len(results)} results for: <b>{escaped_query}</b> 🎉\n"
@@ -2060,28 +2060,37 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
     )
     buttons = []
 
+    # Add files for the current page
     for idx, file in enumerate(page_results, start=start + 1):
         file_size = format_size(file.get("file_size"))
         file_obj_id = str(file['_id'])
+
+        # Escape filename for HTML
         file_name_escaped = html.escape(file['file_name'][:40])
         button_text = f"[{file_size}] {file_name_escaped}"
 
-        # Use a callback_data that includes the file_id and the owner's user_id
-        callback_data_get = f"get_{file_obj_id}_{owner_user_id}"
-        buttons.append([InlineKeyboardButton(button_text, callback_data=callback_data_get)])
+        # Create the deep link URL
+        deep_link_url = f"https://t.me/{bot_username}?start=files_{file_obj_id}"
 
+        buttons.append(
+            [InlineKeyboardButton(button_text, url=deep_link_url)]
+        )
+
+    # Add the promotional text at the end
     text += "\n\nKaustav Ray                                                                                                      Join here: @filestore4u     @freemovie5u"
 
+    # Add navigation buttons
     nav_buttons = []
     if page > 0:
-        nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page_{page-1}_{owner_user_id}"))
+        nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page_{page-1}_{query}"))
     if end < len(results):
-        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}_{owner_user_id}"))
+        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}_{query}"))
 
     if nav_buttons:
         buttons.append(nav_buttons)
 
-    buttons.append([InlineKeyboardButton("📨 Send All Files (Current Page)", callback_data=f"sendall_{page}_{owner_user_id}")])
+    # Send All button
+    buttons.append([InlineKeyboardButton("📨 Send All Files (Current Page)", callback_data=f"sendall_{page}_{query}")])
 
     reply_markup = InlineKeyboardMarkup(buttons)
 
@@ -2109,44 +2118,28 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle button clicks with ownership check."""
-    query = update.callback_query
-    user_id = query.from_user.id
-    data = query.data
-
-    # --- Ownership Check ---
-    # Extract owner_id from callback data. It's the last element after splitting by '_'.
-    try:
-        owner_id = int(data.split('_')[-1])
-        if user_id != owner_id:
-            await query.answer("This is not for you! Please make your own search.", show_alert=True)
-            return
-    except (ValueError, IndexError):
-        # Fallback for old buttons or malformed data that doesn't have an owner_id
-        pass
-
-    await query.answer()
+    """Handle button clicks."""
     asyncio.create_task(react_to_message_task(update))
+    query = update.callback_query
+    await query.answer()
 
-    if await is_banned(user_id):
+    if await is_banned(update.effective_user.id):
         await send_and_delete_message(context, query.message.chat.id, "🚫 You are banned from using this bot. 🚫")
         return
 
-    await save_user_info(query.from_user)
-    if not await check_member_status(user_id, context):
+    await save_user_info(update.effective_user)
+    if not await check_member_status(update.effective_user.id, context):
         buttons = [[InlineKeyboardButton(f"Join {ch['name']}", url=ch['link'])] for ch in PROMO_CHANNELS]
         keyboard = InlineKeyboardMarkup(buttons)
         await send_and_delete_message(context, query.message.chat.id, "❗️ You must join ALL our channels to use this bot! ❗️", reply_markup=keyboard)
         return
 
-    # --- File Request ---
-    if data.startswith("get_"):
-        _, file_id_str, _ = data.split("_", 2)
-        await handle_file_request(query.from_user, file_id_str, context, query.message.chat.id)
+    data = query.data
+    user_id = query.from_user.id
 
     # --- Send All Files (Batch) ---
-    elif data.startswith("sendall_"):
-        _, page_str, _ = data.split("_", 2)
+    if data.startswith("sendall_"):
+        _, page_str, search_query = data.split("_", 2)
         page = int(page_str)
         final_results = context.user_data.get('search_results')
         if not final_results:
@@ -2156,14 +2149,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not files_to_send:
             await send_and_delete_message(context, user_id, "🤷‍♀️ No files found on this page to send. 🤷‍♂️")
             return
+
         asyncio.create_task(send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html()))
 
-    # --- Pagination ---
+    # --- Other Button Logic (Pagination, Start Menu, etc.) ---
     elif data.startswith("page_"):
-        _, page_str, _ = data.split("_", 2)
+        _, page_str, search_query = data.split("_", 2)
         page = int(page_str)
+
         final_results = context.user_data.get('search_results')
-        search_query = context.user_data.get('search_query', '')
         if not final_results:
             await query.answer("⚠️ Search results have expired. Please search again. ⚠️", show_alert=True)
             return
@@ -2175,11 +2169,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context=context,
             query=search_query,
             message_id=query.message.message_id,
-            user_mention=query.from_user.mention_html(),
-            owner_user_id=owner_id
+            user_mention=query.from_user.mention_html()
         )
 
-    # --- Start Menu ---
     elif data == "start_about":
         await query.message.delete()
         await info_command(update, context)
