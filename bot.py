@@ -1490,7 +1490,10 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_delete_message(context, update.effective_chat.id, "Usage: /broadcast <message>")
         return
 
-    broadcast_text = " ".join(context.args)
+    # To preserve original spacing, we get the text after the command entity.
+    # The CommandHandler ensures the first entity is the command.
+    command_entity = update.message.entities[0]
+    broadcast_text = update.message.text[command_entity.length:].lstrip()
 
     # NOTE: This only broadcasts to users in the *current* active database's users_col.
     # To broadcast to ALL users, you'd need to query all URIs for user IDs.
@@ -1547,7 +1550,9 @@ async def grp_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TY
         await send_and_delete_message(context, update.effective_chat.id, "Usage: /grp_broadcast <message>")
         return
 
-    broadcast_text = " ".join(context.args)
+    # To preserve original spacing, we get the text after the command entity.
+    command_entity = update.message.entities[0]
+    broadcast_text = update.message.text[command_entity.length:].lstrip()
 
     # Fetch all unique group IDs from all configured groups databases
     all_group_ids = set()
