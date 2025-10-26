@@ -983,11 +983,12 @@ async def connect_to_admin_command(update: Update, context: ContextTypes.DEFAULT
             context,
             update.effective_chat.id,
             "🤔 Please provide a message to send to the admin. 🤔\n\nUsage: `/connect_to_admin <your message>`",
+            auto_delete=False
         )
         return
 
     if not ADMINS:
-        await send_and_delete_message(context, update.effective_chat.id, "😥 Sorry, the admin is not configured. I can't deliver your message. 😥")
+        await send_and_delete_message(context, update.effective_chat.id, "😥 Sorry, the admin is not configured. I can't deliver your message. 😥", auto_delete=False)
         return
 
     message_to_admin = " ".join(context.args)
@@ -1012,18 +1013,19 @@ async def connect_to_admin_command(update: Update, context: ContextTypes.DEFAULT
         await send_and_delete_message(
             context,
             update.effective_chat.id,
-            "✅ Your message has been sent to the admin. They will reply to you here if needed. 👍"
+            "✅ Your message has been sent to the admin. They will reply to you here if needed. 👍",
+            auto_delete=False
         )
     except TelegramError as e:
         logger.error(f"Failed to send message to admin {admin_id}: {e}")
-        await send_and_delete_message(context, update.effective_chat.id, "😥 Sorry, there was an error sending your message. Please try again later. 🙏")
+        await send_and_delete_message(context, update.effective_chat.id, "😥 Sorry, there was an error sending your message. Please try again later. 🙏", auto_delete=False)
 
 
 async def usm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to send a message to a specific user."""
     asyncio.create_task(react_to_message_task(update))
     if update.effective_user.id not in ADMINS:
-        await send_and_delete_message(context, update.effective_chat.id, "🛑 You do not have permission to use this command. 🛑")
+        await send_and_delete_message(context, update.effective_chat.id, "🛑 You do not have permission to use this command. 🛑", auto_delete=False)
         return
 
     if len(context.args) < 2:
@@ -1031,7 +1033,8 @@ async def usm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context,
             update.effective_chat.id,
             "🤔 <b>Invalid format!</b> Please use: <code>/usm &lt;user_id&gt; &lt;your_message&gt;</code>",
-            parse_mode="HTML"
+            parse_mode="HTML",
+            auto_delete=False
         )
         return
 
@@ -1056,7 +1059,8 @@ async def usm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_delete_message(
             context,
             update.effective_chat.id,
-            f"✅ Your message has been sent to user <code>{user_id_to_message}</code> successfully! 👍"
+            f"✅ Your message has been sent to user <code>{user_id_to_message}</code> successfully! 👍",
+            auto_delete=False
         )
 
     except ValueError:
@@ -1064,14 +1068,16 @@ async def usm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context,
             update.effective_chat.id,
             "❌ <b>Invalid User ID!</b> Please provide a valid numerical User ID. ❌",
-            parse_mode="HTML"
+            parse_mode="HTML",
+            auto_delete=False
         )
     except TelegramError as e:
         logger.error(f"Failed to send message via /usm to {context.args[0]}: {e}")
         await send_and_delete_message(
             context,
             update.effective_chat.id,
-            f"😥 <b>Failed to send message!</b> The user might have blocked the bot, or the ID is incorrect. Error: <code>{e}</code>"
+            f"😥 <b>Failed to send message!</b> The user might have blocked the bot, or the ID is incorrect. Error: <code>{e}</code>",
+            auto_delete=False
         )
 
 
@@ -2354,13 +2360,26 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
 
             # Confirm to the admin that the reply was sent
-            await message.reply_text("✅ Your reply has been sent to the user successfully. 👍")
+            await send_and_delete_message(
+                context,
+                message.chat.id,
+                "✅ Your reply has been sent to the user successfully. 👍",
+                reply_to_message_id=message.message_id,
+                auto_delete=False
+            )
 
         except (IndexError, ValueError, TypeError) as e:
             logger.error(f"Error parsing user ID from admin reply: {e}")
         except TelegramError as e:
             logger.error(f"Failed to send admin reply to user: {e}")
-            await message.reply_text(f"😥 Failed to send reply. Error: {e}")
+            await send_and_delete_message(
+                context,
+                message.chat.id,
+                f"😥 Failed to send reply. Error: <code>{html.escape(str(e))}</code>",
+                reply_to_message_id=message.message_id,
+                auto_delete=False,
+                parse_mode="HTML"
+            )
 
 
 # ========================
