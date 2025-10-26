@@ -997,8 +997,10 @@ async def connect_to_admin_command(update: Update, context: ContextTypes.DEFAULT
     forward_message = (
         f"📩 **New Message from User** 📩\n\n"
         f"**From:** {user.mention_html()}\n"
-        f"**User ID for Reply:** <code>{user.id}</code>\n\n" # Make it clear this is for replying
-        f"<b>Message:</b>\n{html.escape(message_to_admin)}"
+        f"**User ID for Reply:** <code>{user.id}</code>\n\n"  # For the native reply handler
+        f"<b>Message:</b>\n{html.escape(message_to_admin)}\n\n"
+        f"👇 **To reply, you can also click the command below to copy it:**\n"
+        f"<code>/usm {user.id} Your message here...</code>"
     )
 
     try:
@@ -1015,6 +1017,62 @@ async def connect_to_admin_command(update: Update, context: ContextTypes.DEFAULT
     except TelegramError as e:
         logger.error(f"Failed to send message to admin {admin_id}: {e}")
         await send_and_delete_message(context, update.effective_chat.id, "😥 Sorry, there was an error sending your message. Please try again later. 🙏")
+
+
+async def usm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to send a message to a specific user."""
+    asyncio.create_task(react_to_message_task(update))
+    if update.effective_user.id not in ADMINS:
+        await send_and_delete_message(context, update.effective_chat.id, "🛑 You do not have permission to use this command. 🛑")
+        return
+
+    if len(context.args) < 2:
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            "🤔 <b>Invalid format!</b> Please use: <code>/usm &lt;user_id&gt; &lt;your_message&gt;</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    try:
+        user_id_to_message = int(context.args[0])
+        message_to_send = " ".join(context.args[1:])
+
+        # Format the message for the user
+        formatted_message = (
+            f"📨 <b>A Message from the Admin</b> 📨\n\n"
+            f"Hello there! 👋 The admin has sent you a message:\n\n"
+            f"<blockquote>{html.escape(message_to_send)}</blockquote>\n\n"
+            f"Thank you for being a part of our community! 🙏"
+        )
+
+        await context.bot.send_message(
+            chat_id=user_id_to_message,
+            text=formatted_message,
+            parse_mode="HTML"
+        )
+
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            f"✅ Your message has been sent to user <code>{user_id_to_message}</code> successfully! 👍"
+        )
+
+    except ValueError:
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            "❌ <b>Invalid User ID!</b> Please provide a valid numerical User ID. ❌",
+            parse_mode="HTML"
+        )
+    except TelegramError as e:
+        logger.error(f"Failed to send message via /usm to {context.args[0]}: {e}")
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            f"😥 <b>Failed to send message!</b> The user might have blocked the bot, or the ID is incorrect. Error: <code>{e}</code>"
+        )
 
 
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2273,10 +2331,10 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Condition 3: Does the replied-to message contain the special "User ID for Reply:" text?
     if "User ID for Reply:" in replied_message.text:
         try:
-            # Extract the user ID from the message text using a robust regex
-            user_id_match = re.search(r"User ID for Reply:\s*(\d+)", replied_message.text)
+            # Extract the user ID from the message text, accounting for the <code> tag
+            user_id_match = re.search(r"User ID for Reply:\s*<code>(\d+)</code>", replied_message.text)
             if not user_id_match:
-                return # Could not find user ID
+                return  # Could not find user ID in the expected format
 
             user_id_to_reply = int(user_id_match.group(1))
             admin_reply_text = message.text
@@ -2389,6 +2447,7 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("broadcast", broadcast_message))
     ptb_app.add_handler(CommandHandler("grp_broadcast", grp_broadcast_command))
     ptb_app.add_handler(CommandHandler("restart", restart_command))
+    ptb_app.add_handler(CommandHandler("usm", usm_command))
     ptb_app.add_handler(CommandHandler("index_channel", index_channel_command))
     ptb_app.add_handler(CommandHandler("pm_on", pm_on_command))
     ptb_app.add_handler(CommandHandler("pm_off", pm_off_command))
