@@ -477,13 +477,26 @@ async def send_file_task(user_id: int, source_chat_id: int, context: ContextType
                 new_caption = '<a href="https://t.me/filestore4u">Download File</a>'
                 break
 
+        # Construct the direct link to the message in the private DB channel
+        # The channel ID needs the '-100' prefix removed for the URL
+        channel_id_for_url = str(file_data["channel_id"]).replace("-100", "")
+        message_link = f"https://t.me/c/{channel_id_for_url}/{file_data['file_id']}"
+
+        # Create a share URL that opens the user's forward/share menu
+        share_url = f"https://t.me/share/url?url={message_link}"
+
+        # Create the "Save" button and keyboard markup
+        save_button = InlineKeyboardButton("✅ Save to Saved Messages ✅", url=share_url)
+        keyboard = InlineKeyboardMarkup([[save_button]])
+
         logger.info(f"Attempting to send file with caption: {new_caption}")
         sent_message = await context.bot.copy_message(
             chat_id=user_id,
             from_chat_id=file_data["channel_id"],
             message_id=file_data["file_id"],
             caption=new_caption,
-            parse_mode="HTML"
+            parse_mode="HTML",
+            reply_markup=keyboard
         )
 
         if sent_message:
@@ -527,13 +540,23 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
                     new_caption = '<a href="https.me/filestore4u">Download File</a>'
                     break
 
+            # Construct the share URL for the "Save" button
+            channel_id_for_url = str(file["channel_id"]).replace("-100", "")
+            message_link = f"https://t.me/c/{channel_id_for_url}/{file['file_id']}"
+            share_url = f"https://t.me/share/url?url={message_link}"
+
+            # Create the "Save" button and keyboard markup
+            save_button = InlineKeyboardButton("✅ Save to Saved Messages ✅", url=share_url)
+            keyboard = InlineKeyboardMarkup([[save_button]])
+
             logger.info(f"Attempting to send file in batch with caption: {new_caption}")
             sent_message = await context.bot.copy_message(
                 chat_id=user_id,
                 from_chat_id=file["channel_id"],
                 message_id=file["file_id"],
                 caption=new_caption,
-                parse_mode="HTML"
+                parse_mode="HTML",
+                reply_markup=keyboard
             )
             sent_messages.append(sent_message.message_id)
             await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
