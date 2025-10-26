@@ -2273,12 +2273,10 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Condition 3: Does the replied-to message contain the special "User ID for Reply:" text?
     if "User ID for Reply:" in replied_message.text:
         try:
-            # Extract the user ID from the message text
-            user_id_str = replied_message.text.split("User ID for Reply:")[1].split("\n")[0].strip()
-            # The user ID is inside a <code> tag, so we need to handle that
-            user_id_match = re.search(r'<code>(\d+)</code>', user_id_str)
+            # Extract the user ID from the message text using a robust regex
+            user_id_match = re.search(r"User ID for Reply:\s*(\d+)", replied_message.text)
             if not user_id_match:
-                return # Could not find the user ID in the expected format
+                return # Could not find user ID
 
             user_id_to_reply = int(user_id_match.group(1))
             admin_reply_text = message.text
