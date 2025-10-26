@@ -971,6 +971,52 @@ async def dl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_delete_message(context, update.effective_chat.id, "😥 Could not generate a download link for this file. 😥")
 
 
+async def connect_to_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Allows a user to send a message to the admin."""
+    asyncio.create_task(react_to_message_task(update))
+    if not await bot_can_respond(update, context):
+        return
+
+    user = update.effective_user
+    if not context.args:
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            "🤔 Please provide a message to send to the admin. 🤔\n\nUsage: `/connect_to_admin <your message>`",
+        )
+        return
+
+    if not ADMINS:
+        await send_and_delete_message(context, update.effective_chat.id, "😥 Sorry, the admin is not configured. I can't deliver your message. 😥")
+        return
+
+    message_to_admin = " ".join(context.args)
+    admin_id = ADMINS[0] # Send to the primary admin
+
+    # Format the message for the admin, embedding the user's ID for easy replies
+    forward_message = (
+        f"📩 **New Message from User** 📩\n\n"
+        f"**From:** {user.mention_html()}\n"
+        f"**User ID for Reply:** <code>{user.id}</code>\n\n" # Make it clear this is for replying
+        f"<b>Message:</b>\n{html.escape(message_to_admin)}"
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=admin_id,
+            text=forward_message,
+            parse_mode="HTML"
+        )
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            "✅ Your message has been sent to the admin. They will reply to you here if needed. 👍"
+        )
+    except TelegramError as e:
+        logger.error(f"Failed to send message to admin {admin_id}: {e}")
+        await send_and_delete_message(context, update.effective_chat.id, "😥 Sorry, there was an error sending your message. Please try again later. 🙏")
+
+
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to show recent error logs."""
     asyncio.create_task(react_to_message_task(update))
@@ -2210,6 +2256,57 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("🤷‍♀️ Owner not configured. 🤷‍♂️", show_alert=True)
 
 
+async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles when an admin replies to a user's forwarded message."""
+    user = update.effective_user
+    message = update.effective_message
+
+    # Condition 1: Is the message from an admin in a private chat?
+    if user.id not in ADMINS or message.chat.type != 'private':
+        return
+
+    # Condition 2: Is it a reply to another message?
+    replied_message = message.reply_to_message
+    if not replied_message:
+        return
+
+    # Condition 3: Does the replied-to message contain the special "User ID for Reply:" text?
+    if "User ID for Reply:" in replied_message.text:
+        try:
+            # Extract the user ID from the message text
+            user_id_str = replied_message.text.split("User ID for Reply:")[1].split("\n")[0].strip()
+            # The user ID is inside a <code> tag, so we need to handle that
+            user_id_match = re.search(r'<code>(\d+)</code>', user_id_str)
+            if not user_id_match:
+                return # Could not find the user ID in the expected format
+
+            user_id_to_reply = int(user_id_match.group(1))
+            admin_reply_text = message.text
+
+            # Format the message to be sent to the user
+            reply_to_user = (
+                f"📨 **A Message from the Admin** 📨\n\n"
+                f"Hello there! 👋 The admin has sent you a reply:\n\n"
+                f"<blockquote>{html.escape(admin_reply_text)}</blockquote>\n\n"
+                f"Thank you for reaching out! 🙏"
+            )
+
+            await context.bot.send_message(
+                chat_id=user_id_to_reply,
+                text=reply_to_user,
+                parse_mode="HTML"
+            )
+
+            # Confirm to the admin that the reply was sent
+            await message.reply_text("✅ Your reply has been sent to the user successfully. 👍")
+
+        except (IndexError, ValueError, TypeError) as e:
+            logger.error(f"Error parsing user ID from admin reply: {e}")
+        except TelegramError as e:
+            logger.error(f"Failed to send admin reply to user: {e}")
+            await message.reply_text(f"😥 Failed to send reply. Error: {e}")
+
+
 # ========================
 # MAIN
 # ========================
@@ -2275,6 +2372,7 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("rand", rand_command))
     ptb_app.add_handler(CommandHandler("refer", refer_command))
     ptb_app.add_handler(CommandHandler("dl", dl_command))
+    ptb_app.add_handler(CommandHandler("connect_to_admin", connect_to_admin_command))
     ptb_app.add_handler(CommandHandler("request", request_command))
     ptb_app.add_handler(CommandHandler("request_index", request_index_command))
     ptb_app.add_handler(CommandHandler("done", done_command))
@@ -2312,6 +2410,12 @@ async def main_async():
 
     # Text Search Handler (REVISED LOGIC)
     ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_files))
+
+    # Admin Reply Handler
+    ptb_app.add_handler(MessageHandler(
+        filters.TEXT & filters.ChatType.PRIVATE & filters.REPLY & ~filters.COMMAND,
+        handle_admin_reply
+    ))
 
     # Callback Query Handler (for buttons)
     ptb_app.add_handler(CallbackQueryHandler(button_handler))
