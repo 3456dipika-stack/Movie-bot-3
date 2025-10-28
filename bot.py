@@ -465,17 +465,19 @@ async def send_file_task(user_id: int, source_chat_id: int, context: ContextType
         if not caption_text:
             caption_text = "Download File"
 
-        final_caption_text = caption_text
-        new_caption = ""
-        while True:
-            temp_caption = f'<a href="https://t.me/filestore4u">{html.escape(final_caption_text)}</a>'
-            if len(temp_caption.encode('utf-8')) <= 1024:
-                new_caption = temp_caption
+        warning_message = "⚠️ ❌👉This file automatically❗delete after 5 minute❗so please forward in another chat👈❌"
+
+        final_caption = f"{html.escape(caption_text)}\n\n{warning_message}"
+
+        # Truncate if necessary
+        while len(final_caption.encode('utf-8')) > 1024:
+            caption_text = caption_text[:-1]
+            if not caption_text:
+                final_caption = warning_message # Fallback to just the warning
                 break
-            final_caption_text = final_caption_text[:-1]
-            if not final_caption_text:
-                new_caption = '<a href="https://t.me/filestore4u">Download File</a>'
-                break
+            final_caption = f"{html.escape(caption_text)}\n\n{warning_message}"
+
+        new_caption = final_caption
 
         logger.info(f"Attempting to send file with caption: {new_caption}")
         sent_message = await context.bot.copy_message(
@@ -515,17 +517,20 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
             if not caption_text:
                 caption_text = "Download File"
 
-            final_caption_text = caption_text
-            new_caption = ""
-            while True:
-                temp_caption = f'<a href="https://t.me/filestore4u">{html.escape(final_caption_text)}</a>'
-                if len(temp_caption.encode('utf-8')) <= 1024:
-                    new_caption = temp_caption
+            warning_message = "⚠️ ❌👉This file automatically❗delete after 5 minute❗so please forward in another chat👈❌"
+
+            final_caption = f"{html.escape(caption_text)}\n\n{warning_message}"
+
+            # Truncate if necessary
+            while len(final_caption.encode('utf-8')) > 1024:
+                caption_text = caption_text[:-1]
+                if not caption_text:
+                    final_caption = warning_message # Fallback to just the warning
                     break
-                final_caption_text = final_caption_text[:-1]
-                if not final_caption_text:
-                    new_caption = '<a href="https.me/filestore4u">Download File</a>'
-                    break
+                final_caption = f"{html.escape(caption_text)}\n\n{warning_message}"
+
+            new_caption = final_caption
+
 
             logger.info(f"Attempting to send file in batch with caption: {new_caption}")
             sent_message = await context.bot.copy_message(
