@@ -294,7 +294,9 @@ async def handle_file_request(user, file_id_str, context: ContextTypes.DEFAULT_T
             logger.error(f"DB Error while fetching file {file_id_str}: {e}")
 
     if file_data:
-        asyncio.create_task(send_file_task(user.id, source_chat_id, context, file_data, user.mention_html()))
+        task_queue = context.bot_data['task_queue']
+        await task_queue.put((send_file_task, (user.id, source_chat_id, context, file_data, user.mention_html()), {}))
+        logger.info(f"File request for {file_data.get('file_name')} added to the queue.")
     else:
         await send_and_delete_message(context, source_chat_id, "🤷‍♀️ File not found or an error occurred. 🤷‍♂️")
 
@@ -720,7 +722,9 @@ async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_data = await get_random_file_from_db()
 
     if file_data:
-        asyncio.create_task(send_file_task(user_id, update.effective_chat.id, context, file_data, update.effective_user.mention_html()))
+        task_queue = context.bot_data['task_queue']
+        await task_queue.put((send_file_task, (user_id, update.effective_chat.id, context, file_data, update.effective_user.mention_html()), {}))
+        logger.info("Random file request added to the queue.")
     else:
         await send_and_delete_message(context, update.effective_chat.id, "🤷‍♀️ Could not find a random file. The database might be empty. 🤷‍♂️")
 
@@ -2295,7 +2299,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_and_delete_message(context, user_id, "🤷‍♀️ No files found on this page to send. 🤷‍♂️")
             return
 
-        asyncio.create_task(send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html()))
+        task_queue = context.bot_data['task_queue']
+        await task_queue.put((send_all_files_task, (user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html()), {}))
+        logger.info(f"'Send All' request for page {page} added to the queue.")
+
 
     # --- Other Button Logic (Pagination, Start Menu, etc.) ---
     elif data.startswith("page_"):
@@ -2398,6 +2405,28 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # MAIN
 # ========================
 
+async def queue_worker(ptb_app: Application):
+    """A background worker that processes tasks from the queue."""
+    logger.info("Queue worker started.")
+    while True:
+        try:
+            # Get a task from the queue
+            func, args, kwargs = await ptb_app.bot_data['task_queue'].get()
+
+            # Execute the task
+            logger.info(f"Processing task: {func.__name__}")
+            await func(*args, **kwargs)
+
+        except asyncio.CancelledError:
+            logger.info("Queue worker received cancellation request.")
+            break
+        except Exception as e:
+            logger.exception(f"An error occurred in the queue worker: {e}")
+        finally:
+            # Notify the queue that the task is done
+            ptb_app.bot_data['task_queue'].task_done()
+
+
 class ServerThread(Thread):
     def __init__(self, app):
         Thread.__init__(self)
@@ -2431,6 +2460,14 @@ async def main_async():
     # Create the application instance with persistence
     persistence = PicklePersistence(filepath="bot_persistence.pickle")
     ptb_app = Application.builder().token(token).persistence(persistence).build()
+
+    # Initialize the task queue
+    ptb_app.bot_data['task_queue'] = asyncio.Queue()
+
+    # Start the queue worker as a background task
+    worker_task = asyncio.create_task(queue_worker(ptb_app))
+    ptb_app.bot_data['worker_task'] = worker_task
+
 
     # Start the Flask web server in a background thread
     server = ServerThread(app)
