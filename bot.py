@@ -467,17 +467,24 @@ async def send_file_task(user_id: int, source_chat_id: int, context: ContextType
 
         warning_message = "⚠️ ❌👉This file automatically❗delete after 5 minute❗so please forward in another chat👈❌"
 
-        final_caption = f"{html.escape(caption_text)}\n\n{warning_message}"
+        final_caption_text = caption_text # Keep a mutable copy for truncation
 
-        # Truncate if necessary
-        while len(final_caption.encode('utf-8')) > 1024:
-            caption_text = caption_text[:-1]
-            if not caption_text:
-                final_caption = warning_message # Fallback to just the warning
+        while True:
+            # Construct the full caption with the deeplink
+            new_caption = f'<a href="https://t.me/filestore4u">{html.escape(final_caption_text)}</a>\n\n{warning_message}'
+
+            # Check byte length
+            if len(new_caption.encode('utf-8')) <= 1024:
+                break # Caption is valid
+
+            # If too long, truncate the filename part
+            final_caption_text = final_caption_text[:-1]
+
+            # Fallback if filename becomes empty
+            if not final_caption_text:
+                # Fallback to a generic name that should fit
+                new_caption = f'<a href="https://t.me/filestore4u">Download File</a>\n\n{warning_message}'
                 break
-            final_caption = f"{html.escape(caption_text)}\n\n{warning_message}"
-
-        new_caption = final_caption
 
         logger.info(f"Attempting to send file with caption: {new_caption}")
         sent_message = await context.bot.copy_message(
@@ -519,18 +526,24 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
 
             warning_message = "⚠️ ❌👉This file automatically❗delete after 5 minute❗so please forward in another chat👈❌"
 
-            final_caption = f"{html.escape(caption_text)}\n\n{warning_message}"
+            final_caption_text = caption_text # Keep a mutable copy for truncation
 
-            # Truncate if necessary
-            while len(final_caption.encode('utf-8')) > 1024:
-                caption_text = caption_text[:-1]
-                if not caption_text:
-                    final_caption = warning_message # Fallback to just the warning
+            while True:
+                # Construct the full caption with the deeplink
+                new_caption = f'<a href="https://t.me/filestore4u">{html.escape(final_caption_text)}</a>\n\n{warning_message}'
+
+                # Check byte length
+                if len(new_caption.encode('utf-8')) <= 1024:
+                    break # Caption is valid
+
+                # If too long, truncate the filename part
+                final_caption_text = final_caption_text[:-1]
+
+                # Fallback if filename becomes empty
+                if not final_caption_text:
+                    # Fallback to a generic name that should fit
+                    new_caption = f'<a href="https://t.me/filestore4u">Download File</a>\n\n{warning_message}'
                     break
-                final_caption = f"{html.escape(caption_text)}\n\n{warning_message}"
-
-            new_caption = final_caption
-
 
             logger.info(f"Attempting to send file in batch with caption: {new_caption}")
             sent_message = await context.bot.copy_message(
