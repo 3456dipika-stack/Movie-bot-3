@@ -42,6 +42,7 @@ from werkzeug.serving import make_server
 # ========================
 BOT_TOKEN = "7657898593:AAEqWdlNE9bAVikWAnHRYyQyj0BCXy6qUmc"  # Bot Token
 DB_CHANNEL = -1002975831610  # Database channel
+INDEX_CHANNEL = -1003223134796 # Index channel
 LOG_CHANNEL = -1002988891392  # Channel to log user queries
 # Channels users must join for access
 JOIN_CHECK_CHANNEL = [-1002692055617, -1002551875503, -1002839913869]
@@ -1890,6 +1891,90 @@ async def save_file_from_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_delete_message(context, update.effective_chat.id, "🆘 Failed to save file on all available databases. 🆘")
 
 
+async def save_file_from_index_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Saves files from the index channel to the database."""
+    chat_id = update.message.chat.id
+
+    # Only process files from the index channel
+    if chat_id != INDEX_CHANNEL:
+        return
+
+    file = update.message.document or update.message.video or update.message.audio
+    if not file:
+        return
+
+    # Get filename from caption, then from file_name
+    if update.message.caption:
+        raw_name = update.message.caption
+    else:
+        raw_name = getattr(file, "file_name", None) or getattr(file, "title", None) or file.file_unique_id
+
+    clean_name = sanitize_text(raw_name) if raw_name else "Unknown"
+
+    global current_uri_index, db, files_col, users_col, banned_users_col
+
+    saved = False
+    # Start the loop from the current active index and wrap around to try all
+    for i in range(len(MONGO_URIS)):
+        idx = (current_uri_index + i) % len(MONGO_URIS)
+        uri_to_try = MONGO_URIS[idx]
+
+        client = mongo_clients.get(uri_to_try)
+        if not client:
+            logger.warning(f"Skipping disconnected DB for index channel file save: ...{uri_to_try[-20:]}")
+            continue
+
+        try:
+            temp_db = client["telegram_files"]
+            temp_files_col = temp_db["files"]
+
+            # Try to save metadata
+            temp_files_col.insert_one({
+                "file_name": clean_name,
+                "file_id": update.message.message_id,
+                "channel_id": chat_id,
+                "file_size": file.file_size,
+            })
+
+            # If successful and this is not the current active DB, switch to it.
+            if idx != current_uri_index:
+                current_uri_index = idx
+                db = temp_db
+                files_col = temp_db["files"]
+                users_col = temp_db["users"]
+                banned_users_col = temp_db["banned_users"]
+                logger.info(f"Switched active MongoDB connection to index {current_uri_index}.")
+
+            # Send success notification to the primary admin
+            if ADMINS:
+                try:
+                    await send_and_delete_message(
+                        context,
+                        ADMINS[0],
+                        f"✅ File **`{escape_markdown(clean_name)}`** has been indexed successfully from the index channel to DB #{idx + 1}. 🎉",
+                        parse_mode="MarkdownV2"
+                    )
+                except TelegramError as e:
+                    logger.error(f"Failed to send notification to admin {ADMINS[0]}: {e}")
+            saved = True
+            break
+
+        except Exception as e:
+            logger.error(f"Error saving file from index channel with URI #{idx + 1}: {e}")
+            if idx == current_uri_index and len(MONGO_URIS) > 1 and ADMINS:
+                try:
+                    await send_and_delete_message(context, ADMINS[0], "⚠️ Primary DB failed for index channel. Trying next available URI... 🙏")
+                except TelegramError:
+                    pass
+
+    if not saved and ADMINS:
+        logger.error("All MongoDB URIs have been tried and failed for index channel.")
+        try:
+            await send_and_delete_message(context, ADMINS[0], "🆘 Failed to save file from index channel on all available databases. 🆘")
+        except TelegramError:
+            pass
+
+
 async def save_file_from_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin sends file directly to channel -> save to DB. Uses connection pooling."""
     user_id = update.message.from_user.id
@@ -2464,6 +2549,12 @@ async def main_async():
     ptb_app.add_handler(MessageHandler(
         (filters.Document.ALL | filters.VIDEO | filters.AUDIO) & filters.Chat(chat_id=DB_CHANNEL),
         save_file_from_channel
+    ))
+
+    # Auto file indexing from INDEX_CHANNEL
+    ptb_app.add_handler(MessageHandler(
+        (filters.Document.ALL | filters.VIDEO | filters.AUDIO) & filters.Chat(chat_id=INDEX_CHANNEL),
+        save_file_from_index_channel
     ))
 
     # Text Search Handler (REVISED LOGIC)
