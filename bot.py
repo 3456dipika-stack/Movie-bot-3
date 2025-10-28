@@ -47,7 +47,6 @@ LOG_CHANNEL = -1002988891392  # Channel to log user queries
 JOIN_CHECK_CHANNEL = [-1002692055617, -1002551875503, -1002839913869]
 ADMINS = [6705618257]        # Admin IDs
 PM_SEARCH_ENABLED = True   # Controls whether non-admins can search in PM
-MAINTENANCE_MODE = False  # To toggle maintenance mode
 
 # Words to ignore in search queries for better matching
 SEARCH_STOP_WORDS = [
@@ -294,25 +293,18 @@ async def handle_file_request(user, file_id_str, context: ContextTypes.DEFAULT_T
             logger.error(f"DB Error while fetching file {file_id_str}: {e}")
 
     if file_data:
-        task_queue = context.bot_data['task_queue']
-        await task_queue.put((send_file_task, (user.id, source_chat_id, context, file_data, user.mention_html()), {}))
-        logger.info(f"File request for {file_data.get('file_name')} added to the queue.")
+        asyncio.create_task(send_file_task(user.id, source_chat_id, context, file_data, user.mention_html()))
     else:
         await send_and_delete_message(context, source_chat_id, "🤷‍♀️ File not found or an error occurred. 🤷‍♂️")
 
 
 async def bot_can_respond(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """
-    Check if the bot should respond.
-    - Blocks non-admins if maintenance mode is on.
+    Check if the bot should respond in a group chat.
+    - Allows all private chats.
     - In groups, responds only if the bot is an administrator.
     """
-    user = update.effective_user
     chat = update.effective_chat
-
-    if MAINTENANCE_MODE and user.id not in ADMINS:
-        await send_and_delete_message(context, chat.id, "🚧 The bot is under maintenance. Please try again later. 🚧")
-        return False
 
     if chat.type == "private":
         return True
@@ -722,9 +714,7 @@ async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_data = await get_random_file_from_db()
 
     if file_data:
-        task_queue = context.bot_data['task_queue']
-        await task_queue.put((send_file_task, (user_id, update.effective_chat.id, context, file_data, update.effective_user.mention_html()), {}))
-        logger.info("Random file request added to the queue.")
+        asyncio.create_task(send_file_task(user_id, update.effective_chat.id, context, file_data, update.effective_user.mention_html()))
     else:
         await send_and_delete_message(context, update.effective_chat.id, "🤷‍♀️ Could not find a random file. The database might be empty. 🤷‍♂️")
 
@@ -1713,26 +1703,6 @@ async def pm_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_and_delete_message(context, update.effective_chat.id, "✅ Private message search has been disabled for all users. 🚫")
 
 
-async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to toggle maintenance mode."""
-    global MAINTENANCE_MODE
-    asyncio.create_task(react_to_message_task(update))
-    if update.effective_user.id not in ADMINS:
-        await send_and_delete_message(context, update.effective_chat.id, "🛑 You do not have permission to use this command. 🛑")
-        return
-
-    if not context.args or context.args[0].lower() not in ["on", "off"]:
-        await send_and_delete_message(context, update.effective_chat.id, "Usage: /maintenance <on|off>")
-        return
-
-    if context.args[0].lower() == "on":
-        MAINTENANCE_MODE = True
-        await send_and_delete_message(context, update.effective_chat.id, "✅ Maintenance mode has been enabled. 🚧")
-    else:
-        MAINTENANCE_MODE = False
-        await send_and_delete_message(context, update.effective_chat.id, "✅ Maintenance mode has been disabled. 🛠️")
-
-
 async def index_channel_task(context: ContextTypes.DEFAULT_TYPE, channel_id: int, skip: int, user_chat_id: int):
     """Background task to handle channel indexing."""
     last_message_id = 0
@@ -2268,10 +2238,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if MAINTENANCE_MODE and query.from_user.id not in ADMINS:
-        await send_and_delete_message(context, query.message.chat.id, "🚧 The bot is under maintenance. Please try again later. 🚧")
-        return
-
     if await is_banned(update.effective_user.id):
         await send_and_delete_message(context, query.message.chat.id, "🚫 You are banned from using this bot. 🚫")
         return
@@ -2299,10 +2265,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_and_delete_message(context, user_id, "🤷‍♀️ No files found on this page to send. 🤷‍♂️")
             return
 
-        task_queue = context.bot_data['task_queue']
-        await task_queue.put((send_all_files_task, (user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html()), {}))
-        logger.info(f"'Send All' request for page {page} added to the queue.")
-
+        asyncio.create_task(send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html()))
 
     # --- Other Button Logic (Pagination, Start Menu, etc.) ---
     elif data.startswith("page_"):
@@ -2405,28 +2368,6 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # MAIN
 # ========================
 
-async def queue_worker(ptb_app: Application):
-    """A background worker that processes tasks from the queue."""
-    logger.info("Queue worker started.")
-    while True:
-        try:
-            # Get a task from the queue
-            func, args, kwargs = await ptb_app.bot_data['task_queue'].get()
-
-            # Execute the task
-            logger.info(f"Processing task: {func.__name__}")
-            await func(*args, **kwargs)
-
-        except asyncio.CancelledError:
-            logger.info("Queue worker received cancellation request.")
-            break
-        except Exception as e:
-            logger.exception(f"An error occurred in the queue worker: {e}")
-        finally:
-            # Notify the queue that the task is done
-            ptb_app.bot_data['task_queue'].task_done()
-
-
 class ServerThread(Thread):
     def __init__(self, app):
         Thread.__init__(self)
@@ -2460,14 +2401,6 @@ async def main_async():
     # Create the application instance with persistence
     persistence = PicklePersistence(filepath="bot_persistence.pickle")
     ptb_app = Application.builder().token(token).persistence(persistence).build()
-
-    # Initialize the task queue
-    ptb_app.bot_data['task_queue'] = asyncio.Queue()
-
-    # Start the queue worker as a background task
-    worker_task = asyncio.create_task(queue_worker(ptb_app))
-    ptb_app.bot_data['worker_task'] = worker_task
-
 
     # Start the Flask web server in a background thread
     server = ServerThread(app)
@@ -2519,7 +2452,6 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("index_channel", index_channel_command))
     ptb_app.add_handler(CommandHandler("pm_on", pm_on_command))
     ptb_app.add_handler(CommandHandler("pm_off", pm_off_command))
-    ptb_app.add_handler(CommandHandler("maintenance", maintenance_command))
 
     # File and Message Handlers
     # Admin file upload via PM
