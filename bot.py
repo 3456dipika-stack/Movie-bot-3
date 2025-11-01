@@ -2023,7 +2023,12 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text="⏳ Searching... ⏳"
     )
 
+    # We get the query text first, then we can delete the user's message.
     raw_query = update.message.text.strip()
+    try:
+        await update.message.delete()
+    except TelegramError as e:
+        logger.warning(f"Could not delete user's query message: {e}")
     # Sanitize and normalize query for better fuzzy search
     normalized_query = sanitize_text(raw_query)
 
