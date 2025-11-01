@@ -44,7 +44,7 @@ BOT_TOKEN = "7657898593:AAEqWdlNE9bAVikWAnHRYyQyj0BCXy6qUmc"  # Bot Token
 DB_CHANNEL = -1002975831610  # Database channel
 LOG_CHANNEL = -1002988891392  # Channel to log user queries
 # Channels users must join for access
-JOIN_CHECK_CHANNEL = [-1002692055617, -1002551875503, -1002839913869]
+JOIN_CHECK_CHANNEL = [-1002692055617]
 ADMINS = [6705618257]        # Admin IDs
 PM_SEARCH_ENABLED = True   # Controls whether non-admins can search in PM
 
@@ -61,14 +61,10 @@ CHARS_TO_REMOVE = r"~±×÷•°`_{}@#₹%&*-=()!\"':+/?৳$£€©®^π[]@#₹%
 REACTIONS = ["👀", "😱", "🔥", "😍", "🎉", "🥰", "😇", "⚡"]
 PROMO_CHANNELS = [
     {"name": "@filestore4u", "link": "https://t.me/filestore4u", "id": -1002692055617},
-    {"name": "@code_boost", "link": "https://t.me/code_boost", "id": -1002551875503},
-    {"name": "@KRBOOK_official", "link": "https://t.me/KRBOOK_official", "id": -1002839913869},
 ]
 CUSTOM_PROMO_MESSAGE = (
     "Credit to Prince Kaustav Ray\n\n"
-    "Join our main channel: @filestore4u\n"
-    "Join our channel: @code_boost\n"
-    "Join our channel: @krbook_official"
+    "Join our main channel: @filestore4u"
 )
 
 HELP_TEXT = (
