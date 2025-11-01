@@ -44,7 +44,7 @@ BOT_TOKEN = "7657898593:AAEqWdlNE9bAVikWAnHRYyQyj0BCXy6qUmc"  # Bot Token
 DB_CHANNEL = -1002975831610  # Database channel
 LOG_CHANNEL = -1002988891392  # Channel to log user queries
 # Channels users must join for access
-JOIN_CHECK_CHANNEL = [-1002692055617]
+JOIN_CHECK_CHANNEL = [-1002692055617, -1002551875503, -1002839913869]
 ADMINS = [6705618257]        # Admin IDs
 PM_SEARCH_ENABLED = True   # Controls whether non-admins can search in PM
 
@@ -61,10 +61,14 @@ CHARS_TO_REMOVE = r"~±×÷•°`_{}@#₹%&*-=()!\"':+/?৳$£€©®^π[]@#₹%
 REACTIONS = ["👀", "😱", "🔥", "😍", "🎉", "🥰", "😇", "⚡"]
 PROMO_CHANNELS = [
     {"name": "@filestore4u", "link": "https://t.me/filestore4u", "id": -1002692055617},
+    {"name": "@code_boost", "link": "https://t.me/code_boost", "id": -1002551875503},
+    {"name": "@KRBOOK_official", "link": "https://t.me/KRBOOK_official", "id": -1002839913869},
 ]
 CUSTOM_PROMO_MESSAGE = (
     "Credit to Prince Kaustav Ray\n\n"
-    "Join our main channel: @filestore4u"
+    "Join our main channel: @filestore4u\n"
+    "Join our channel: @code_boost\n"
+    "Join our channel: @krbook_official"
 )
 
 HELP_TEXT = (
@@ -2168,15 +2172,15 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except TelegramError as e:
         logger.warning(f"Could not delete status message: {e}")
 
-    # Send the results as a new message, replying to the user's query
+    # Edit the status message to show the results
     await send_results_page(
-        chat_id=update.effective_chat.id,
+        chat_id=status_message.chat.id,
         results=final_results,
         page=0,
         context=context,
         query=raw_query,
         user_mention=user.mention_html(),
-        reply_to_message_id=update.message.message_id
+        message_id=status_message.message_id
     )
 
 
@@ -2228,6 +2232,7 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
 
     reply_markup = InlineKeyboardMarkup(buttons)
 
+    sent_message = None
     try:
         if message_id:
             sent_message = await context.bot.edit_message_text(
@@ -2237,7 +2242,8 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
                 reply_markup=reply_markup,
                 parse_mode="HTML"
             )
-        elif reply_to_message_id:
+        else:
+            # Send as a new message, replying if the ID is provided
             sent_message = await context.bot.send_message(
                 chat_id=chat_id,
                 text=text,
@@ -2245,8 +2251,11 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
                 parse_mode="HTML",
                 reply_to_message_id=reply_to_message_id
             )
-        # Schedule the search results for deletion
-        asyncio.create_task(delete_message_after_delay(context, chat_id, sent_message.message_id, 5 * 60))
+
+        if sent_message:
+            # Schedule the search results for deletion
+            asyncio.create_task(delete_message_after_delay(context, chat_id, sent_message.message_id, 5 * 60))
+
     except TelegramError as e:
         logger.error(f"Error sending or editing search results page: {e}")
 
