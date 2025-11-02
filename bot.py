@@ -72,7 +72,6 @@ HELP_TEXT = (
     "**👋 Here is a list of available commands:**\n\n"
     "**User Commands:**\n"
     "• `/start` - 🚀 Start the bot.\n"
-    "• `/dl` - 🔗 Get a direct download link for a file.\n"
     "• `/help` - ℹ️ Show this help message.\n"
     "• `/info` - 🤖 Get bot information.\n"
     "• `/refer` - 🎁 Get your referral link to earn premium access.\n"
@@ -987,51 +986,6 @@ async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update.effective_chat.id,
             "😥 Sorry, there was an error sending your request. Please try again later. 🙏"
         )
-
-async def dl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the /dl command to generate a direct download link."""
-    asyncio.create_task(react_to_message_task(update))
-    if not await bot_can_respond(update, context):
-        return
-
-    user = update.effective_user
-    if await is_banned(user.id):
-        await send_and_delete_message(context, update.effective_chat.id, "🚫 You are banned from using this bot. 🚫")
-        return
-
-    if user.id not in ADMINS:
-        if not await check_member_status(user.id, context):
-            buttons = [[InlineKeyboardButton(f"Join {ch['name']}", url=ch['link'])] for ch in PROMO_CHANNELS]
-            keyboard = InlineKeyboardMarkup(buttons)
-            await send_and_delete_message(context, update.effective_chat.id, "❗️ You must join ALL our channels to use this bot! ❗️", reply_markup=keyboard)
-            return
-
-    replied_message = update.message.reply_to_message
-    if not replied_message or not (replied_message.document or replied_message.video or replied_message.audio):
-        await send_and_delete_message(context, update.effective_chat.id, "🤔 Please reply to a file with `/dl` to get its download link. 🤔")
-        return
-
-    try:
-        file_to_dl = replied_message.document or replied_message.video or replied_message.audio
-        file_obj = await context.bot.get_file(file_to_dl.file_id)
-
-        # Correctly construct the full download URL
-        download_link = f"https://api.telegram.org/file/bot{context.bot.token}/{file_obj.file_path}"
-
-        file_name = file_to_dl.file_name or "your file"
-
-        response_text = (
-            f"✅ Here is the direct download link for **{html.escape(file_name)}**:\n\n"
-            f"🔗 `{download_link}`\n\n"
-            "**Note:** This link is temporary and will expire in about 1 hour. ⏳"
-        )
-
-        await send_and_delete_message(context, update.effective_chat.id, response_text, parse_mode="HTML")
-
-    except TelegramError as e:
-        logger.error(f"Error in /dl command: {e}")
-        await send_and_delete_message(context, update.effective_chat.id, "😥 Could not generate a download link for this file. 😥")
-
 
 async def connect_to_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Allows a user to send a message to the admin."""
@@ -2756,7 +2710,6 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("info", info_command))
     ptb_app.add_handler(CommandHandler("rand", rand_command))
     ptb_app.add_handler(CommandHandler("refer", refer_command))
-    ptb_app.add_handler(CommandHandler("dl", dl_command))
     ptb_app.add_handler(CommandHandler("connect_to_admin", connect_to_admin_command))
     ptb_app.add_handler(CommandHandler("request", request_command))
     ptb_app.add_handler(CommandHandler("request_index", request_index_command))
