@@ -1226,7 +1226,9 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_delete_message(context, update.effective_chat.id, "🛑 You do not have permission to use this command. 🛑")
         return
 
-    await send_and_delete_message(context, update.effective_chat.id, "🔄 Collecting statistics, please wait... 🔄")
+    status_message = await context.bot.send_message(context.effective_chat.id, "🔄 Collecting statistics, please wait... 🔄")
+    if not status_message:
+        return # Can't proceed without a message to edit
 
     user_count = 0
     total_file_count_all_db = 0 # Accumulator for total files across all URIs
@@ -1279,11 +1281,30 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for idx, status in uri_stats.items():
             stats_message += f"  • URI #{idx + 1}: {status}\n"
 
-        await send_and_delete_message(context, update.effective_chat.id, stats_message, parse_mode="HTML")
+        try:
+            edited_message = await context.bot.edit_message_text(
+                chat_id=status_message.chat.id,
+                message_id=status_message.message_id,
+                text=stats_message,
+                parse_mode="HTML"
+            )
+            if edited_message:
+                context.job_queue.run_once(
+                    delete_message_job,
+                    when=datetime.timedelta(minutes=5),
+                    data={"chat_id": edited_message.chat.id, "message_id": edited_message.message_id},
+                    name=f"delete_{edited_message.chat.id}_{edited_message.message_id}"
+                )
+        except TelegramError as e:
+            logger.error(f"Error editing stats message: {e}")
 
     except Exception as e:
         logger.error(f"Error getting bot stats: {e}")
-        await send_and_delete_message(context, update.effective_chat.id, "🆘 Failed to retrieve statistics. Please check the database connection. 🆘")
+        await context.bot.edit_message_text(
+            chat_id=status_message.chat.id,
+            message_id=status_message.message_id,
+            text="🆘 Failed to retrieve statistics. Please check the database connection. 🆘"
+        )
 
 
 async def delete_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2523,10 +2544,35 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     start_time = time.time()
-    message = await send_and_delete_message(context, update.effective_chat.id, text="Pinging...")
+    message = await context.bot.send_message(chat_id=update.effective_chat.id, text="Pinging...")
+    if not message:
+        return  # Exit if the message could not be sent
+
     end_time = time.time()
     latency = round((end_time - start_time) * 1000, 2)
-    await context.bot.edit_message_text(chat_id=message.chat.id, message_id=message.message_id, text=f"🏓 Pong! Latency: {latency} ms")
+
+    try:
+        edited_message = await context.bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=message.message_id,
+            text=f"🏓 Pong! Latency: {latency} ms"
+        )
+
+        # Schedule the final, edited message for deletion
+        if edited_message:
+            context.job_queue.run_once(
+                delete_message_job,
+                when=datetime.timedelta(minutes=5),
+                data={"chat_id": edited_message.chat.id, "message_id": edited_message.message_id},
+                name=f"delete_{edited_message.chat.id}_{edited_message.message_id}"
+            )
+    except TelegramError as e:
+        logger.error(f"Error editing ping message: {e}")
+        # If editing fails, try to delete the original "Pinging..." message
+        try:
+            await context.bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
+        except TelegramError:
+            pass  # Ignore if it's already been deleted
 
 
 async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
