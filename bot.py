@@ -1469,10 +1469,10 @@ async def freeforall_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     if users_col is None or referrals_col is None:
-        await send_and_delete_message(context, update.effective_chat.id, "😥 Database not connected. 😥")
+        await send_and_delete_message(context, update.effective_chat.id, "😥 Database not connected. 😥", auto_delete=False)
         return
 
-    await send_and_delete_message(context, update.effective_chat.id, " granting 12-hour premium access to all users... 🥳")
+    await send_and_delete_message(context, update.effective_chat.id, " granting 12-hour premium access to all users... 🥳", auto_delete=False)
 
     users_cursor = users_col.find({}, {"_id": 1})
     user_ids = [user["_id"] for user in users_cursor]
@@ -1487,7 +1487,7 @@ async def freeforall_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         except Exception as e:
             logger.error(f"Failed to grant premium to user {user_id}: {e}")
 
-    await send_and_delete_message(context, update.effective_chat.id, f"✅ Premium access granted to {len(user_ids)} users for 12 hours. Notifying users... 📬")
+    await send_and_delete_message(context, update.effective_chat.id, f"✅ Premium access granted to {len(user_ids)} users for 12 hours. Notifying users... 📬", auto_delete=False)
 
     broadcast_text = "🎉 You have been granted 12 hours of free premium access! 🥳"
     for user_id in user_ids:
@@ -1497,7 +1497,7 @@ async def freeforall_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         except Exception as e:
             logger.warning(f"Could not send premium notification to user {user_id}: {e}")
 
-    await send_and_delete_message(context, update.effective_chat.id, "✅ All users have been notified. 👍")
+    await send_and_delete_message(context, update.effective_chat.id, "✅ All users have been notified. 👍", auto_delete=False)
 
 
 async def unban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1856,7 +1856,7 @@ async def index_channel_task(context: ContextTypes.DEFAULT_TYPE, channel_id: int
             if forwarded_message:
                 await context.bot.delete_message(chat_id=DB_CHANNEL, message_id=forwarded_message.message_id)
 
-    await send_and_delete_message(context, user_chat_id, f"✅✅ Finished indexing channel {channel_id}. Total files indexed: {indexed_count}. 🎉")
+    await send_and_delete_message(context, user_chat_id, f"✅✅ Finished indexing channel {channel_id}. Total files indexed: {indexed_count}. 🎉", auto_delete=False)
 
 
 async def on_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2225,11 +2225,18 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not final_results:
         try:
-            await context.bot.edit_message_text(
+            edited_message = await context.bot.edit_message_text(
                 chat_id=status_message.chat.id,
                 message_id=status_message.message_id,
                 text="🤷‍♀️ No relevant files found after filtering by relevance. For your query contact @kaustavhibot 🤷‍♂️"
             )
+            if edited_message:
+                context.job_queue.run_once(
+                    delete_message_job,
+                    when=datetime.timedelta(minutes=5),
+                    data={"chat_id": edited_message.chat.id, "message_id": edited_message.message_id},
+                    name=f"delete_{edited_message.chat.id}_{edited_message.message_id}"
+                )
         except TelegramError:
             pass # Ignore if message was deleted
         return
