@@ -43,8 +43,7 @@ from werkzeug.serving import make_server
 BOT_TOKEN = "7657898593:AAEqWdlNE9bAVikWAnHRYyQyj0BCXy6qUmc"  # Bot Token
 DB_CHANNEL = -1002975831610  # Database channel
 LOG_CHANNEL = -1002988891392  # Channel to log user queries
-# Channels users must join for access
-JOIN_CHECK_CHANNEL = [-1002692055617]
+CONTACT_LOG_CHANNEL = -1003294662402  # Channel to log shared contacts
 ADMINS = [6705618257]        # Admin IDs
 PM_SEARCH_ENABLED = True   # Controls whether non-admins can search in PM
 
@@ -59,9 +58,6 @@ CHARS_TO_REMOVE = r"~±×÷•°`_{}@#₹%&*-=()!\"':+/?৳$£€©®^π[]@#₹%
 
 # Custom promotional message (Simplified as per the last request)
 REACTIONS = ["👀", "😱", "🔥", "😍", "🎉", "🥰", "😇", "⚡"]
-PROMO_CHANNELS = [
-    {"name": "@filestore4u", "link": "https://t.me/filestore4u", "id": -1002692055617},
-]
 CUSTOM_PROMO_MESSAGE = (
     "Credit to Prince Kaustav Ray\n\n"
     "Join our main channel: @filestore4u"
@@ -104,6 +100,7 @@ MONGO_URIS = [
 ]
 GROUPS_DB_URIS = ["mongodb+srv://6p5e2y8_db_user:MxRFLhQ534AI3rfQ@cluster0.j9hcylx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"]
 REFERRAL_DB_URI = "mongodb+srv://qy8gjiw_db_user:JjryWhQV4CYtzcYo@cluster0.lkkvli8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+CONTACT_DB_URI = "mongodb+srv://4yxduh8_db_user:45Lyw2zgcCUhxTQd@cluster0.afxbyeo.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 current_uri_index = 0
 
 # Centralized connection manager
@@ -117,6 +114,7 @@ banned_users_col = None
 groups_col = None
 referrals_col = None
 referred_users_col = None
+contact_col = None
 
 
 # In-memory caches for performance
@@ -233,17 +231,11 @@ def sanitize_text(text: str) -> str:
     return name
 
 
-async def check_member_status(user_id, context: ContextTypes.DEFAULT_TYPE):
-    """Check if the user is a member of ALL required promotional channels."""
-    for channel in PROMO_CHANNELS:
-        try:
-            member = await context.bot.get_chat_member(chat_id=channel['id'], user_id=user_id)
-            if member.status not in ["member", "administrator", "creator"]:
-                return False
-        except TelegramError as e:
-            logger.error(f"Error checking member status for user {user_id} in channel {channel['id']}: {e}")
-            return False # If we can't check one, we assume they are not a member.
-    return True
+async def check_contact_verification(user_id):
+    """Check if the user has shared their contact."""
+    if contact_col is not None:
+        return contact_col.find_one({"_id": user_id}) is not None
+    return False
 
 async def is_banned(user_id):
     """Check if the user is banned, with in-memory caching."""
@@ -268,10 +260,16 @@ async def handle_file_request(user, file_id_str, context: ContextTypes.DEFAULT_T
         return
 
     await save_user_info(user)
-    if not await check_member_status(user.id, context):
-        buttons = [[InlineKeyboardButton(f"Join {ch['name']}", url=ch['link'])] for ch in PROMO_CHANNELS]
-        keyboard = InlineKeyboardMarkup(buttons)
-        await send_and_delete_message(context, source_chat_id, "❗️ You must join ALL our channels to use this bot! ❗️", reply_markup=keyboard)
+    if not await check_contact_verification(user.id):
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Share Contact & Verify", request_contact=True)]]
+        )
+        await send_and_delete_message(
+            context,
+            source_chat_id,
+            "❗️ To use this bot, you must first verify by sharing your contact. ❗️",
+            reply_markup=keyboard
+        )
         return
 
     file_data = None
@@ -372,12 +370,14 @@ def connect_to_mongo():
     Initializes connection pools for all database URIs specified in the config.
     It also sets the initial active database connection.
     """
-    global mongo_clients, db, files_col, users_col, banned_users_col, groups_col, referrals_col, referred_users_col, clones_col, current_uri_index
+    global mongo_clients, db, files_col, users_col, banned_users_col, groups_col, referrals_col, referred_users_col, contact_col, current_uri_index
 
     # Consolidate all unique URIs
     all_uris = set(MONGO_URIS + GROUPS_DB_URIS)
     if REFERRAL_DB_URI:
         all_uris.add(REFERRAL_DB_URI)
+    if CONTACT_DB_URI:
+        all_uris.add(CONTACT_DB_URI)
 
     for uri in all_uris:
         try:
@@ -414,6 +414,18 @@ def connect_to_mongo():
                 logger.critical("Failed to connect to the Referral MongoDB URI. Referral system will not function.")
         else:
             logger.warning("REFERRAL_DB_URI not set. Referral system will be disabled.")
+
+        # Connect to the contact database
+        if CONTACT_DB_URI:
+            contact_client = mongo_clients.get(CONTACT_DB_URI)
+            if contact_client:
+                contact_db = contact_client["contact_db"]
+                contact_col = contact_db["contacts"]
+                logger.info("Successfully connected to Contact MongoDB.")
+            else:
+                logger.critical("Failed to connect to the Contact MongoDB URI. Contact verification will not function.")
+        else:
+            logger.warning("CONTACT_DB_URI not set. Contact verification will be disabled.")
 
         logger.info(f"Successfully connected to initial MongoDB at index {current_uri_index}.")
         return True
@@ -716,10 +728,16 @@ async def rand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await save_user_info(update.effective_user)
-    if not await check_member_status(update.effective_user.id, context):
-        buttons = [[InlineKeyboardButton(f"Join {ch['name']}", url=ch['link'])] for ch in PROMO_CHANNELS]
-        keyboard = InlineKeyboardMarkup(buttons)
-        await send_and_delete_message(context, update.effective_chat.id, "❗️ You must join ALL our channels to use this bot! ❗️", reply_markup=keyboard)
+    if not await check_contact_verification(update.effective_user.id):
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Share Contact & Verify", request_contact=True)]]
+        )
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            "❗️ To use this bot, you must first verify by sharing your contact. ❗️",
+            reply_markup=keyboard
+        )
         return
 
     user_id = update.effective_user.id
@@ -929,10 +947,16 @@ async def dl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if user.id not in ADMINS:
-        if not await check_member_status(user.id, context):
-            buttons = [[InlineKeyboardButton(f"Join {ch['name']}", url=ch['link'])] for ch in PROMO_CHANNELS]
-            keyboard = InlineKeyboardMarkup(buttons)
-            await send_and_delete_message(context, update.effective_chat.id, "❗️ You must join ALL our channels to use this bot! ❗️", reply_markup=keyboard)
+        if not await check_contact_verification(user.id):
+            keyboard = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("Share Contact & Verify", request_contact=True)]]
+            )
+            await send_and_delete_message(
+                context,
+                update.effective_chat.id,
+                "❗️ To use this bot, you must first verify by sharing your contact. ❗️",
+                reply_markup=keyboard
+            )
             return
 
     replied_message = update.message.reply_to_message
@@ -2010,11 +2034,16 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     asyncio.create_task(react_to_message_task(update))
 
     await save_user_info(update.effective_user)
-    if not await check_member_status(update.effective_user.id, context):
-        # NEW: Updated to show buttons for all channels
-        buttons = [[InlineKeyboardButton(f"Join {ch['name']}", url=ch['link'])] for ch in PROMO_CHANNELS]
-        keyboard = InlineKeyboardMarkup(buttons)
-        await send_and_delete_message(context, update.effective_chat.id, "❗️ You must join ALL our channels to use this bot! ❗️", reply_markup=keyboard)
+    if not await check_contact_verification(update.effective_user.id):
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Share Contact & Verify", request_contact=True)]]
+        )
+        await send_and_delete_message(
+            context,
+            update.effective_chat.id,
+            "❗️ To use this bot, you must first verify by sharing your contact. ❗️",
+            reply_markup=keyboard
+        )
         return
 
     # Send initial status message that will be edited with progress
@@ -2258,10 +2287,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await save_user_info(update.effective_user)
-    if not await check_member_status(update.effective_user.id, context):
-        buttons = [[InlineKeyboardButton(f"Join {ch['name']}", url=ch['link'])] for ch in PROMO_CHANNELS]
-        keyboard = InlineKeyboardMarkup(buttons)
-        await send_and_delete_message(context, query.message.chat.id, "❗️ You must join ALL our channels to use this bot! ❗️", reply_markup=keyboard)
+    if not await check_contact_verification(update.effective_user.id):
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Share Contact & Verify", request_contact=True)]]
+        )
+        await send_and_delete_message(
+            context,
+            query.message.chat.id,
+            "❗️ To use this bot, you must first verify by sharing your contact. ❗️",
+            reply_markup=keyboard
+        )
         return
 
     data = query.data
@@ -2315,6 +2350,36 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "no_owner":
         await query.answer("🤷‍♀️ Owner not configured. 🤷‍♂️", show_alert=True)
+
+
+async def handle_contact_share(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles when a user shares their contact for verification."""
+    contact = update.message.contact
+    user = update.effective_user
+
+    if contact and user.id == contact.user_id:
+        if contact_col is not None:
+            try:
+                contact_col.update_one(
+                    {"_id": user.id},
+                    {"$set": {
+                        "phone_number": contact.phone_number,
+                        "first_name": contact.first_name,
+                        "last_name": contact.last_name,
+                    }},
+                    upsert=True
+                )
+                await context.bot.send_message(
+                    chat_id=CONTACT_LOG_CHANNEL,
+                    text=f"New contact shared:\nUser: {user.mention_html()}\nID: {user.id}\nPhone: {contact.phone_number}"
+                )
+                await send_and_delete_message(context, user.id, "✅ Thank you! You are now verified. ✅")
+                # Here you could re-trigger the original action if you stored it in user_data
+            except Exception as e:
+                logger.error(f"Error saving contact for user {user.id}: {e}")
+                await send_and_delete_message(context, user.id, "An error occurred during verification. Please try again.")
+    else:
+        await send_and_delete_message(context, user.id, "Please share your own contact to verify.")
 
 
 async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2495,6 +2560,9 @@ async def main_async():
 
     # Group tracking handler
     ptb_app.add_handler(ChatMemberHandler(on_chat_member_update))
+
+    # Contact verification handler
+    ptb_app.add_handler(MessageHandler(filters.CONTACT, handle_contact_share))
 
     logger.info("Bot starting...")
 
