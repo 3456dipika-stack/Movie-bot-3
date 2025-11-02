@@ -691,6 +691,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("❓ Help", callback_data="start_help")
         ],
         [
+             InlineKeyboardButton("🔍 Inline Search", switch_inline_query_current_chat=""),
+        ],
+        [
             InlineKeyboardButton("➕ Add Me To Your Group ➕", url=f"https://t.me/{bot_username}?startgroup=true")
         ],
         [
@@ -2206,21 +2209,25 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, user_mention: str, message_id: int = None, reply_to_message_id: int = None, active_filters=None):
+async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, user_mention: str, message_id: int = None, reply_to_message_id: int = None, active_filters=None, filter_view=None):
     """Sends or edits a message to show a paginated list of search results with filter buttons."""
     if active_filters is None:
         active_filters = {}
+    context.user_data['active_filters'] = active_filters
 
     # 1. Filter results based on active filters
     filtered_results = []
-    for file in results:
-        match = True
-        for key, value in active_filters.items():
-            if file.get(key) != value:
-                match = False
-                break
-        if match:
-            filtered_results.append(file)
+    if active_filters:
+        for file in results:
+            match = True
+            for key, value in active_filters.items():
+                if file.get(key) != value:
+                    match = False
+                    break
+            if match:
+                filtered_results.append(file)
+    else:
+        filtered_results = results
 
     # 2. Paginate the filtered results
     start, end = page * 6, (page + 1) * 6
@@ -2248,27 +2255,35 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
         deep_link_url = f"https://t.me/{bot_username}?start=files_{file_obj_id}"
         buttons.append([InlineKeyboardButton(button_text, url=deep_link_url)])
 
-    # 5. Generate dynamic filter buttons
-    filter_types = ['season', 'language', 'quality', 'year']
-    for filter_type in filter_types:
-        # Get all unique, non-None values for this filter type from the *entire* original result set
-        options = sorted(list(set(r.get(filter_type) for r in results if r.get(filter_type))))
-        if len(options) > 1:
-            filter_row = []
+    # 5. Generate dynamic filter buttons (Cascading)
+    filter_types = ['language', 'quality', 'season']
+
+    if filter_view in filter_types:
+        # Show options for the selected filter type
+        options = sorted(list(set(r.get(filter_view) for r in results if r.get(filter_view))))
+        if options:
+            option_buttons = []
             for option in options:
-                # Add a checkmark if this filter is active
-                button_text = f"✅ {option}" if active_filters.get(filter_type) == option else option
-                # Callback data format: filter_TYPE_VALUE_QUERY
-                callback_data = f"filter_{filter_type}_{option}_{query}"
-                filter_row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
-            buttons.append(filter_row)
+                button_text = f"✅ {option}" if active_filters.get(filter_view) == option else option
+                callback_data = f"filter_{filter_view}_{option}_{query}"
+                option_buttons.append(InlineKeyboardButton(button_text, callback_data=callback_data))
+            # Arrange options into rows of 2
+            buttons.extend([option_buttons[i:i + 2] for i in range(0, len(option_buttons), 2)])
+        buttons.append([InlineKeyboardButton("⬅️ Back to Filters", callback_data=f"filter_back_{query}")])
+    else:
+        # Show main filter category buttons
+        category_buttons = []
+        for f_type in filter_types:
+            # Check if there are any options available for this filter in the results
+            if any(r.get(f_type) for r in results):
+                category_buttons.append(InlineKeyboardButton(f_type.title(), callback_data=f"filter_view_{f_type}_{query}"))
+        if category_buttons:
+            buttons.append(category_buttons)
 
     # Add a 'Clear Filters' button if any are active
     if active_filters:
         buttons.append([InlineKeyboardButton("❌ Clear All Filters", callback_data=f"filter_clear_all_{query}")])
 
-    # Add the promotional text at the end
-    text += "\n\nKaustav Ray                                                                                                      Join here: @filestore4u     @freemovie5u"
 
     # 6. Generate navigation and action buttons
     nav_buttons = []
@@ -2380,20 +2395,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         active_filters = context.user_data.get('active_filters', {})
+        filter_view = None
 
-        if action == "clear":
+        if action == "view":
+            filter_view = parts[2]
+        elif action == "back":
+            filter_view = None
+        elif action == "clear":
             if "all" in parts:
                 active_filters.clear()
         else:
             filter_type = action
-            filter_value = parts[2]
-            # Toggle filter: if it's already active, remove it. Otherwise, set it.
+            filter_value = "_".join(parts[2:-1]) # Handles values with underscores
+            # Toggle filter
             if active_filters.get(filter_type) == filter_value:
                 del active_filters[filter_type]
             else:
                 active_filters[filter_type] = filter_value
+            # After applying a filter, go back to the main filter view
+            filter_view = None
 
-        context.user_data['active_filters'] = active_filters
 
         # Reset to page 0 whenever a filter is changed
         await send_results_page(
@@ -2404,7 +2425,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query=search_query,
             message_id=query.message.message_id,
             user_mention=query.from_user.mention_html(),
-            active_filters=active_filters
+            active_filters=active_filters,
+            filter_view=filter_view
         )
 
     elif data == "start_about":
@@ -2436,32 +2458,59 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles inline search queries."""
+    """Handles inline search queries with improved relevance."""
     query = update.inline_query.query
-    if not query or len(query) < 3:
-        await update.inline_query.answer([], switch_pm_text="Type at least 3 characters to search...", switch_pm_parameter="start")
+    if not query or len(query) < 2:
+        await update.inline_query.answer([], switch_pm_text="Type at least 2 characters to search...", switch_pm_parameter="start", cache_time=5)
         return
 
-    # Basic search logic (can be expanded)
-    # Using a simplified version of the main search for speed
     normalized_query = sanitize_text(query)
-    regex_pattern = re.compile(f".*{re.escape(normalized_query)}.*", re.IGNORECASE)
+    query_words = normalized_query.lower().split()
+    filtered_words = [word for word in query_words if word not in SEARCH_STOP_WORDS]
+    search_query = " ".join(filtered_words) or normalized_query
+
+    words = [re.escape(word) for word in search_query.split() if len(word) > 1]
+    if not words:
+        await update.inline_query.answer([], switch_pm_text="Query too short, try again.", switch_pm_parameter="start", cache_time=5)
+        return
+
+    regex_pattern = re.compile("".join([f"(?=.*{word})" for word in words]), re.IGNORECASE)
     query_filter = {"file_name": {"$regex": regex_pattern}}
 
-    results = []
-    for uri in MONGO_URIS:
+    preliminary_results = []
+    # Search only the first two DBs for speed in inline mode
+    for uri in MONGO_URIS[:2]:
         client = mongo_clients.get(uri)
         if client:
             try:
                 db = client["telegram_files"]
                 files_col = db["files"]
-                results.extend(list(files_col.find(query_filter).limit(20))) # Limit inline results
+                # Limit the initial fetch to 50 for performance
+                preliminary_results.extend(list(files_col.find(query_filter).limit(50)))
             except Exception as e:
-                logger.error(f"Inline search DB error: {e}")
+                logger.error(f"Inline search DB error on URI ...{uri[-20:]}: {e}")
+
+    if not preliminary_results:
+        await update.inline_query.answer([], switch_pm_text="No results found.", switch_pm_parameter="start", cache_time=5)
+        return
+
+    results_with_score = []
+    unique_files = set()
+    for file in preliminary_results:
+        file_key = (file.get('file_id'), file.get('channel_id'))
+        if file_key in unique_files:
+            continue
+        score = fuzz.WRatio(search_query, file['file_name'])
+        if score > 45:
+            results_with_score.append((file, score))
+            unique_files.add(file_key)
+
+    sorted_results = sorted(results_with_score, key=lambda x: x[1], reverse=True)
+    final_results = [result[0] for result in sorted_results]
 
     inline_results = []
     bot_username = context.bot.username
-    for file in results[:20]: # Show max 20 results inline
+    for file in final_results[:20]: # Show max 20 results
         file_id = str(file['_id'])
         deep_link_url = f"https://t.me/{bot_username}?start=files_{file_id}"
 
@@ -2471,10 +2520,10 @@ async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 title=file['file_name'],
                 description=f"Size: {format_size(file.get('file_size', 0))}",
                 input_message_content=InputTextMessageContent(
-                    f"You requested the file: {file['file_name']}"
+                    f"Bot is preparing your file: {file['file_name']}.\n\nClick the button above to get your file."
                 ),
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("Get File", url=deep_link_url)
+                    InlineKeyboardButton("Get File Here", url=deep_link_url)
                 ]])
             )
         )
