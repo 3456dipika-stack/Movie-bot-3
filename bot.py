@@ -2520,9 +2520,34 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     start_time = time.time()
     message = await context.bot.send_message(chat_id=update.effective_chat.id, text="Pinging...")
+    if not message:
+        return  # Exit if the message could not be sent
+
     end_time = time.time()
     latency = round((end_time - start_time) * 1000, 2)
-    await message.edit_text(f"🏓 Pong! Latency: {latency} ms")
+
+    try:
+        edited_message = await context.bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=message.message_id,
+            text=f"🏓 Pong! Latency: {latency} ms"
+        )
+
+        # Schedule the final, edited message for deletion
+        if edited_message:
+            context.job_queue.run_once(
+                delete_message_job,
+                when=datetime.timedelta(minutes=5),
+                data={"chat_id": edited_message.chat.id, "message_id": edited_message.message_id},
+                name=f"delete_{edited_message.chat.id}_{edited_message.message_id}"
+            )
+    except TelegramError as e:
+        logger.error(f"Error editing ping message: {e}")
+        # If editing fails, try to delete the original "Pinging..." message
+        try:
+            await context.bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
+        except TelegramError:
+            pass  # Ignore if it's already been deleted
 
 
 async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
