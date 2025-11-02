@@ -735,9 +735,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
         [
-            InlineKeyboardButton("🔎 Search Here", switch_inline_query_current_chat=""),
-        ],
-        [
             InlineKeyboardButton("🎉 Add Me To Your Groups 🎉", url=f"https://t.me/{bot_username}?startgroup=true")
         ]
     ]
