@@ -2113,15 +2113,6 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['search_results'] = final_results
     context.user_data['search_query'] = raw_query
 
-    # Delete the "Searching..." status message
-    try:
-        await context.bot.delete_message(
-            chat_id=status_message.chat.id,
-            message_id=status_message.message_id
-        )
-    except TelegramError as e:
-        logger.warning(f"Could not delete status message: {e}")
-
     # Edit the status message to show the results
     await send_results_page(
         chat_id=status_message.chat.id,
