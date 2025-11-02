@@ -501,6 +501,12 @@ async def react_to_message_task(update: Update):
 async def send_file_task(user_id: int, source_chat_id: int, context: ContextTypes.DEFAULT_TYPE, file_data: dict, user_mention: str):
     """Background task to send a single file to the user's private chat and auto-delete it."""
     try:
+        # Fix: Add a check for required fields to prevent KeyError
+        if not all(k in file_data for k in ("channel_id", "file_id")):
+            logger.error(f"Malformed file data for user {user_id}. Missing 'channel_id' or 'file_id'. Data: {file_data}")
+            await send_and_delete_message(context, source_chat_id, "🤷‍♀️ File data is corrupted or incomplete. Cannot send the file. 🤷‍♂️")
+            return
+
         caption_text = file_data.get("file_name", "").strip()
         if not caption_text:
             caption_text = "Download File"
@@ -564,6 +570,13 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
     sent_messages = []
     try:
         for file in file_list:
+            # Fix: Add a check for required fields to prevent KeyError
+            if not all(k in file for k in ("channel_id", "file_id")):
+                logger.error(f"Malformed file data in batch for user {user_id}. Missing 'channel_id' or 'file_id'. Data: {file}")
+                # Notify the user about the specific failure but continue with the rest of the batch
+                await send_and_delete_message(context, source_chat_id, f"⚠️ Could not send file `{(file.get('file_name', 'Unknown'))}` as its data is corrupted. ⚠️")
+                continue
+
             caption_text = file.get("file_name", "").strip()
             if not caption_text:
                 caption_text = "Download File"
@@ -699,7 +712,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Im an auto filter bot which can provide movies in your groups. Add Me To Your "
         "Group and promote me as admin to let me get in action.\n"
         "Click on the Help button for More...\n\n"
-        "© Maintained By @hitesh0007"
+        "© Maintained By Kaustav Ray"
     )
 
     keyboard = [
