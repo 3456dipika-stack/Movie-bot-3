@@ -6,7 +6,7 @@ import asyncio
 from bson.objectid import ObjectId
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -16,6 +16,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
     PicklePersistence,
+    InlineQueryHandler,
 )
 from telegram.error import TelegramError
 from fuzzywuzzy import fuzz
@@ -231,6 +232,37 @@ def sanitize_text(text: str) -> str:
     # Condense multiple spaces into one and strip leading/trailing spaces
     name = re.sub(r"\s+", " ", sanitized).strip()
     return name
+
+
+def parse_metadata(filename):
+    """Extracts metadata like year, quality, season, and language from a filename."""
+    filename_lower = filename.lower()
+    metadata = {}
+
+    # Year (finds 4-digit numbers between 1900 and 2099)
+    year_match = re.search(r'\b(19\d{2}|20\d{2})\b', filename)
+    if year_match:
+        metadata['year'] = year_match.group(1)
+
+    # Quality (matches 480p, 720p, 1080p, 4k etc.)
+    quality_match = re.search(r'\b(\d{3,4}p|4k|hd|bluray|webrip|hdrip|hdtc)\b', filename_lower)
+    if quality_match:
+        metadata['quality'] = quality_match.group(1)
+
+    # Season (matches S01, Season 1, etc.)
+    season_match = re.search(r'\b(s(\d{1,2})|season (\d{1,2}))\b', filename_lower)
+    if season_match:
+        # Prioritize the captured group with digits
+        season_num = season_match.group(2) or season_match.group(3)
+        if season_num:
+            metadata['season'] = f"S{int(season_num):02d}" # Standardize to S01, S02...
+
+    # Language (common audio languages)
+    language_match = re.search(r'\b(hindi|english|tamil|telugu|malayalam|kannada|bengali|dual audio)\b', filename_lower)
+    if language_match:
+        metadata['language'] = language_match.group(1).title()
+
+    return metadata
 
 
 async def check_member_status(user_id, context: ContextTypes.DEFAULT_TYPE):
@@ -2135,6 +2167,9 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
             score = fuzz.WRatio(search_query, file['file_name'])
             
         if score > 45:
+            # Parse and attach metadata to the file dictionary
+            file_metadata = parse_metadata(file['file_name'])
+            file.update(file_metadata) # Add parsed data to the file object
             results_with_score.append((file, score))
             unique_files.add(file_key)
 
@@ -2171,50 +2206,80 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, user_mention: str, message_id: int = None, reply_to_message_id: int = None):
-    """Sends or edits a message to show a paginated list of search results."""
+async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, user_mention: str, message_id: int = None, reply_to_message_id: int = None, active_filters=None):
+    """Sends or edits a message to show a paginated list of search results with filter buttons."""
+    if active_filters is None:
+        active_filters = {}
+
+    # 1. Filter results based on active filters
+    filtered_results = []
+    for file in results:
+        match = True
+        for key, value in active_filters.items():
+            if file.get(key) != value:
+                match = False
+                break
+        if match:
+            filtered_results.append(file)
+
+    # 2. Paginate the filtered results
     start, end = page * 6, (page + 1) * 6
-    page_results = results[start:end]
+    page_results = filtered_results[start:end]
+    total_pages = math.ceil(len(filtered_results) / 6)
     bot_username = context.bot.username
 
-    # Escape the query string for HTML
+    # 3. Build the message text
     escaped_query = html.escape(query)
     text = (
-        f"Hey {user_mention}, here are the top {len(results)} results for: <b>{escaped_query}</b> 🎉\n"
-        f"(Page {page + 1} / {math.ceil(len(results) / 6)}) (Sorted by Relevance)"
+        f"Hey {user_mention}, here are {len(filtered_results)} results for: <b>{escaped_query}</b> 🎉\n"
+        f"Page {page + 1}/{total_pages} (Sorted by Relevance)"
     )
+    if active_filters:
+        text += "\n<b>Active Filters:</b> " + ", ".join(f"{k.title()}: {v}" for k, v in active_filters.items())
+
     buttons = []
 
-    # Add files for the current page
-    for idx, file in enumerate(page_results, start=start + 1):
+    # 4. Generate file buttons for the current page
+    for file in page_results:
         file_size = format_size(file.get("file_size"))
         file_obj_id = str(file['_id'])
-
-        # Escape filename for HTML
         file_name_escaped = html.escape(file['file_name'][:40])
         button_text = f"[{file_size}] {file_name_escaped}"
-
-        # Create the deep link URL
         deep_link_url = f"https://t.me/{bot_username}?start=files_{file_obj_id}"
+        buttons.append([InlineKeyboardButton(button_text, url=deep_link_url)])
 
-        buttons.append(
-            [InlineKeyboardButton(button_text, url=deep_link_url)]
-        )
+    # 5. Generate dynamic filter buttons
+    filter_types = ['season', 'language', 'quality', 'year']
+    for filter_type in filter_types:
+        # Get all unique, non-None values for this filter type from the *entire* original result set
+        options = sorted(list(set(r.get(filter_type) for r in results if r.get(filter_type))))
+        if len(options) > 1:
+            filter_row = []
+            for option in options:
+                # Add a checkmark if this filter is active
+                button_text = f"✅ {option}" if active_filters.get(filter_type) == option else option
+                # Callback data format: filter_TYPE_VALUE_QUERY
+                callback_data = f"filter_{filter_type}_{option}_{query}"
+                filter_row.append(InlineKeyboardButton(button_text, callback_data=callback_data))
+            buttons.append(filter_row)
+
+    # Add a 'Clear Filters' button if any are active
+    if active_filters:
+        buttons.append([InlineKeyboardButton("❌ Clear All Filters", callback_data=f"filter_clear_all_{query}")])
 
     # Add the promotional text at the end
     text += "\n\nKaustav Ray                                                                                                      Join here: @filestore4u     @freemovie5u"
 
-    # Add navigation buttons
+    # 6. Generate navigation and action buttons
     nav_buttons = []
     if page > 0:
         nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page_{page-1}_{query}"))
-    if end < len(results):
+    if end < len(filtered_results):
         nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}_{query}"))
 
     if nav_buttons:
         buttons.append(nav_buttons)
 
-    # Send All button
     buttons.append([InlineKeyboardButton("📨 Send All Files (Current Page)", callback_data=f"sendall_{page}_{query}")])
 
     reply_markup = InlineKeyboardMarkup(buttons)
@@ -2288,6 +2353,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = int(page_str)
 
         final_results = context.user_data.get('search_results')
+        active_filters = context.user_data.get('active_filters', {})
         if not final_results:
             await query.answer("⚠️ Search results have expired. Please search again. ⚠️", show_alert=True)
             return
@@ -2299,7 +2365,46 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context=context,
             query=search_query,
             message_id=query.message.message_id,
-            user_mention=query.from_user.mention_html()
+            user_mention=query.from_user.mention_html(),
+            active_filters=active_filters
+        )
+
+    elif data.startswith("filter_"):
+        parts = data.split("_")
+        action = parts[1]
+        search_query = parts[-1]
+
+        final_results = context.user_data.get('search_results')
+        if not final_results:
+            await query.answer("⚠️ Search results have expired. Please search again. ⚠️", show_alert=True)
+            return
+
+        active_filters = context.user_data.get('active_filters', {})
+
+        if action == "clear":
+            if "all" in parts:
+                active_filters.clear()
+        else:
+            filter_type = action
+            filter_value = parts[2]
+            # Toggle filter: if it's already active, remove it. Otherwise, set it.
+            if active_filters.get(filter_type) == filter_value:
+                del active_filters[filter_type]
+            else:
+                active_filters[filter_type] = filter_value
+
+        context.user_data['active_filters'] = active_filters
+
+        # Reset to page 0 whenever a filter is changed
+        await send_results_page(
+            chat_id=query.message.chat.id,
+            results=final_results,
+            page=0,
+            context=context,
+            query=search_query,
+            message_id=query.message.message_id,
+            user_mention=query.from_user.mention_html(),
+            active_filters=active_filters
         )
 
     elif data == "start_about":
@@ -2328,6 +2433,53 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     end_time = time.time()
     latency = round((end_time - start_time) * 1000, 2)
     await message[0].edit_text(f"🏓 Pong! Latency: {latency} ms")
+
+
+async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles inline search queries."""
+    query = update.inline_query.query
+    if not query or len(query) < 3:
+        await update.inline_query.answer([], switch_pm_text="Type at least 3 characters to search...", switch_pm_parameter="start")
+        return
+
+    # Basic search logic (can be expanded)
+    # Using a simplified version of the main search for speed
+    normalized_query = sanitize_text(query)
+    regex_pattern = re.compile(f".*{re.escape(normalized_query)}.*", re.IGNORECASE)
+    query_filter = {"file_name": {"$regex": regex_pattern}}
+
+    results = []
+    for uri in MONGO_URIS:
+        client = mongo_clients.get(uri)
+        if client:
+            try:
+                db = client["telegram_files"]
+                files_col = db["files"]
+                results.extend(list(files_col.find(query_filter).limit(20))) # Limit inline results
+            except Exception as e:
+                logger.error(f"Inline search DB error: {e}")
+
+    inline_results = []
+    bot_username = context.bot.username
+    for file in results[:20]: # Show max 20 results inline
+        file_id = str(file['_id'])
+        deep_link_url = f"https://t.me/{bot_username}?start=files_{file_id}"
+
+        inline_results.append(
+            InlineQueryResultArticle(
+                id=file_id,
+                title=file['file_name'],
+                description=f"Size: {format_size(file.get('file_size', 0))}",
+                input_message_content=InputTextMessageContent(
+                    f"You requested the file: {file['file_name']}"
+                ),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("Get File", url=deep_link_url)
+                ]])
+            )
+        )
+
+    await update.inline_query.answer(inline_results, cache_time=10)
 
 
 async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2509,6 +2661,9 @@ async def main_async():
 
     # Group tracking handler
     ptb_app.add_handler(ChatMemberHandler(on_chat_member_update))
+
+    # Inline search handler
+    ptb_app.add_handler(InlineQueryHandler(inline_search))
 
     logger.info("Bot starting...")
 
