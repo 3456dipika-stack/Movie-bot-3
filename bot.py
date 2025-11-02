@@ -362,7 +362,7 @@ async def send_and_delete_message(
     reply_to_message_id=None,
     auto_delete: bool = True
 ):
-    """Sends a message and optionally schedules its deletion after 5 minutes."""
+    """Sends a message and optionally schedules its deletion after 5 minutes using the job queue."""
     try:
         if reply_to_message_id:
             sent_message = await context.bot.send_message(
@@ -380,23 +380,35 @@ async def send_and_delete_message(
                 parse_mode=parse_mode
             )
 
-        deletion_task = None
-        if auto_delete:
-            deletion_task = asyncio.create_task(delete_message_after_delay(context, chat_id, sent_message.message_id, 5 * 60))
-
-        return sent_message, deletion_task
+        if auto_delete and sent_message:
+            context.job_queue.run_once(
+                delete_message_job,
+                when=datetime.timedelta(minutes=5),
+                data={"chat_id": chat_id, "message_id": sent_message.message_id},
+                name=f"delete_{chat_id}_{sent_message.message_id}"
+            )
+        return sent_message
     except TelegramError as e:
         logger.error(f"Error in send_and_delete_message to chat {chat_id}: {e}")
-        return None, None
+        return None
 
-async def delete_message_after_delay(context, chat_id, message_id, delay):
-    """Awaits a delay and then deletes a message."""
-    await asyncio.sleep(delay)
+
+async def delete_message_job(context: ContextTypes.DEFAULT_TYPE):
+    """Job callback to delete a message."""
+    job_data = context.job.data
+    chat_id = job_data.get("chat_id")
+    message_id = job_data.get("message_id")
+
+    if not chat_id or not message_id:
+        logger.error(f"delete_message_job missing chat_id or message_id in job data: {job_data}")
+        return
+
     try:
         await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-        logger.info(f"Auto-deleted message {message_id} from chat {chat_id}.")
+        logger.info(f"Job auto-deleted message {message_id} from chat {chat_id}.")
     except TelegramError as e:
-        logger.warning(f"Failed to auto-delete message {message_id} from chat {chat_id}: {e}")
+        # It's common for messages to be deleted by other means, so we log as warning
+        logger.warning(f"Job failed to auto-delete message {message_id} from chat {chat_id}: {e}")
 
 
 def connect_to_mongo():
@@ -528,9 +540,13 @@ async def send_file_task(user_id: int, source_chat_id: int, context: ContextType
             confirmation_text = f"✅ {user_mention}, I have sent the file to you in a private message. 🤫 It will be deleted automatically in 5 minutes. ⏳"
             await send_and_delete_message(context, source_chat_id, confirmation_text, parse_mode="HTML")
 
-            await asyncio.sleep(5 * 60)
-            await context.bot.delete_message(chat_id=user_id, message_id=sent_message.message_id)
-            logger.info(f"Deleted message {sent_message.message_id} from chat {user_id}.")
+            # Schedule the sent file for deletion
+            context.job_queue.run_once(
+                delete_message_job,
+                when=datetime.timedelta(minutes=5),
+                data={"chat_id": user_id, "message_id": sent_message.message_id},
+                name=f"delete_{user_id}_{sent_message.message_id}"
+            )
 
     except TelegramError as e:
         if "Forbidden: bot can't initiate conversation with a user" in str(e):
@@ -593,13 +609,14 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
             parse_mode="HTML"
         )
 
-        await asyncio.sleep(5 * 60)
+        # Schedule all sent files for deletion
         for message_id in sent_messages:
-            try:
-                await context.bot.delete_message(chat_id=user_id, message_id=message_id)
-                logger.info(f"Deleted message {message_id} from chat {user_id}.")
-            except TelegramError as e:
-                logger.warning(f"Failed to delete message {message_id} for user {user_id}: {e}")
+            context.job_queue.run_once(
+                delete_message_job,
+                when=datetime.timedelta(minutes=5),
+                data={"chat_id": user_id, "message_id": message_id},
+                name=f"delete_{user_id}_{message_id}"
+            )
 
     except TelegramError as e:
         if "Forbidden: bot can't initiate conversation with a user" in str(e):
@@ -676,31 +693,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Standard start message only if there are no args
     bot_username = context.bot.username
-    owner_id = ADMINS[0] if ADMINS else None
-    user_mention = user.mention_html()
 
     welcome_text = (
-        f"👋 Hello {user_mention}, I am an advanced filter bot. 🤖\n\n"
-        "I can help you find files in this chat with ease. 🔎 Just send me the name of the file you're looking for!\n\n"
-        "Click the buttons below to learn more about how I work. 👇"
+        f"👋 HELLO {user.first_name.upper()}.\n\n"
+        "Im an auto filter bot which can provide movies in your groups. Add Me To Your "
+        "Group and promote me as admin to let me get in action.\n"
+        "Click on the Help button for More...\n\n"
+        "© Maintained By @hitesh0007"
     )
 
     keyboard = [
         [
-            InlineKeyboardButton("ℹ️ About Bot", callback_data="start_about"),
-            InlineKeyboardButton("❓ Help", callback_data="start_help")
+            InlineKeyboardButton("🔎 Search Here", switch_inline_query_current_chat=""),
         ],
         [
-             InlineKeyboardButton("🔍 Inline Search", switch_inline_query_current_chat=""),
-        ],
-        [
-            InlineKeyboardButton("➕ Add Me To Your Group ➕", url=f"https://t.me/{bot_username}?startgroup=true")
-        ],
-        [
-            InlineKeyboardButton("👑 Owner", url=f"tg://user?id={owner_id}") if owner_id else InlineKeyboardButton("👑 Owner", callback_data="no_owner")
-        ],
-        [
-            InlineKeyboardButton("❌ Close", callback_data="start_close")
+            InlineKeyboardButton("🎉 Add Me To Your Groups 🎉", url=f"https://t.me/{bot_username}?startgroup=true")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2148,7 +2155,13 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
             # Schedule the "no results" message for deletion
-            asyncio.create_task(delete_message_after_delay(context, edited_message.chat.id, edited_message.message_id, 5 * 60))
+            if edited_message:
+                context.job_queue.run_once(
+                    delete_message_job,
+                    when=datetime.timedelta(minutes=5),
+                    data={"chat_id": edited_message.chat.id, "message_id": edited_message.message_id},
+                    name=f"delete_{edited_message.chat.id}_{edited_message.message_id}"
+                )
         except TelegramError:
             pass # Ignore if message was deleted
         return
@@ -2320,8 +2333,13 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
             )
 
         if sent_message:
-            # Schedule the search results for deletion
-            asyncio.create_task(delete_message_after_delay(context, chat_id, sent_message.message_id, 5 * 60))
+            # Schedule the search results for deletion using the job queue
+            context.job_queue.run_once(
+                delete_message_job,
+                when=datetime.timedelta(minutes=5),
+                data={"chat_id": chat_id, "message_id": sent_message.message_id},
+                name=f"delete_{chat_id}_{sent_message.message_id}"
+            )
 
     except TelegramError as e:
         logger.error(f"Error sending or editing search results page: {e}")
@@ -2451,10 +2469,10 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     start_time = time.time()
-    message = await send_and_delete_message(context, update.effective_chat.id, "Pinging...", auto_delete=False)
+    message = await context.bot.send_message(chat_id=update.effective_chat.id, text="Pinging...")
     end_time = time.time()
     latency = round((end_time - start_time) * 1000, 2)
-    await message[0].edit_text(f"🏓 Pong! Latency: {latency} ms")
+    await message.edit_text(f"🏓 Pong! Latency: {latency} ms")
 
 
 async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2463,6 +2481,12 @@ async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not query or len(query) < 2:
         await update.inline_query.answer([], switch_pm_text="Type at least 2 characters to search...", switch_pm_parameter="start", cache_time=5)
         return
+
+    # Define stop words locally to resolve the NameError from the code review.
+    SEARCH_STOP_WORDS = [
+       "tamil", "telegu", "Bengali", "movie", "movies", "web", "series", "hd", "720p", "1080p", "480p", "4k",
+        "hindi", "english", "dual", "audio", "bluray", "webrip", "hdrip", "hdtc"
+    ]
 
     normalized_query = sanitize_text(query)
     query_words = normalized_query.lower().split()
