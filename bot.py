@@ -542,17 +542,26 @@ async def send_file_task(user_id: int, source_chat_id: int, context: ContextType
         )
 
         if sent_message:
-            await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
-            confirmation_text = f"✅ {user_mention}, I have sent the file to you in a private message. 🤫 It will be deleted automatically in 5 minutes. ⏳"
-            await send_and_delete_message(context, source_chat_id, confirmation_text, parse_mode="HTML")
-
-            # Schedule the sent file for deletion
+            # Schedule the primary file for deletion first, so it's always scheduled.
             context.job_queue.run_once(
                 delete_message_job,
                 when=datetime.timedelta(minutes=5),
                 data={"chat_id": user_id, "message_id": sent_message.message_id},
                 name=f"delete_{user_id}_{sent_message.message_id}"
             )
+
+            # Use separate try-except blocks for follow-up messages for resilience.
+            try:
+                await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
+            except Exception:
+                logger.exception(f"Failed to send promo message to user {user_id} in PM.")
+
+            try:
+                confirmation_text = f"✅ {user_mention}, I have sent the file to you in a private message. 🤫 It will be deleted automatically in 5 minutes. ⏳"
+                await send_and_delete_message(context, source_chat_id, confirmation_text, parse_mode="HTML")
+            except Exception:
+                logger.exception(f"Failed to send confirmation message to source chat {source_chat_id}.")
+
 
     except TelegramError as e:
         if "Forbidden: bot can't initiate conversation with a user" in str(e):
@@ -610,26 +619,33 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
                 caption=new_caption,
                 parse_mode="HTML"
             )
-            sent_messages.append(sent_message.message_id)
-            await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
+            sent_messages.append(sent_message) # Store the full message object
+            try:
+                await send_and_delete_message(context, user_id, CUSTOM_PROMO_MESSAGE)
+            except Exception:
+                logger.exception(f"Failed to send promo message during batch send for user {user_id}.")
             await asyncio.sleep(0.5)
 
-        confirmation_text = f"✅ {user_mention}, I have sent all files to you in a private message. 🤫 They will be deleted automatically in 5 minutes. ⏳"
-        await send_and_delete_message(
-            context,
-            source_chat_id,
-            confirmation_text,
-            parse_mode="HTML"
-        )
-
         # Schedule all sent files for deletion
-        for message_id in sent_messages:
+        for msg in sent_messages:
             context.job_queue.run_once(
                 delete_message_job,
                 when=datetime.timedelta(minutes=5),
-                data={"chat_id": user_id, "message_id": message_id},
-                name=f"delete_{user_id}_{message_id}"
+                data={"chat_id": user_id, "message_id": msg.message_id},
+                name=f"delete_{user_id}_{msg.message_id}"
             )
+
+        try:
+            confirmation_text = f"✅ {user_mention}, I have sent all files to you in a private message. 🤫 They will be deleted automatically in 5 minutes. ⏳"
+            await send_and_delete_message(
+                context,
+                source_chat_id,
+                confirmation_text,
+                parse_mode="HTML"
+            )
+        except Exception:
+            logger.exception(f"Failed to send batch confirmation message to source chat {source_chat_id}.")
+
 
     except TelegramError as e:
         if "Forbidden: bot can't initiate conversation with a user" in str(e):
