@@ -571,7 +571,6 @@ async def send_file_task(user_id: int, source_chat_id: int, context: ContextType
             await send_and_delete_message(context, source_chat_id, "🤷‍♀️ File not found or could not be sent. 🤷‍♂️")
     except Exception:
         logger.exception(f"An unexpected error occurred in send_file_task for user {user_id}")
-        logger.error(f"Problematic file_data: {file_data}")
         await send_and_delete_message(context, source_chat_id, "🆘 An unexpected error occurred. Please try again later. 🆘")
 
 
@@ -656,7 +655,6 @@ async def send_all_files_task(user_id: int, source_chat_id: int, context: Contex
             await send_and_delete_message(context, source_chat_id, "😥 One or more files could not be sent. 😥")
     except Exception:
         logger.exception(f"An unexpected error occurred in send_all_files_task for user {user_id}")
-        logger.error(f"Problematic file_list: {file_list}")
         await send_and_delete_message(context, source_chat_id, "🆘 An unexpected error occurred. Please try again later. 🆘")
 
 
@@ -734,6 +732,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     keyboard = [
+        [
+            InlineKeyboardButton("🔎 Search Here", switch_inline_query_current_chat=""),
+        ],
         [
             InlineKeyboardButton("🎉 Add Me To Your Groups 🎉", url=f"https://t.me/{bot_username}?startgroup=true")
         ]
@@ -1269,7 +1270,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 uri_stats[idx] = "❌ Failed to read"
 
         # 3. Format the output message
-        stats_message = (
+        stats_message_text = (
             f"📊 <b>Bot Statistics</b> 📊\n"
             f"  • Total Users: {user_count}\n"
             f"  • Total Connected Groups: {len(JOIN_CHECK_CHANNEL)}\n" # Using the count of JOIN_CHECK_CHANNEL
@@ -1279,13 +1280,13 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<b>File Count per URI:</b>\n"
         )
         for idx, status in uri_stats.items():
-            stats_message += f"  • URI #{idx + 1}: {status}\n"
+            stats_message_text += f"  • URI #{idx + 1}: {status}\n"
 
         try:
             edited_message = await context.bot.edit_message_text(
                 chat_id=status_message.chat.id,
                 message_id=status_message.message_id,
-                text=stats_message,
+                text=stats_message_text,
                 parse_mode="HTML"
             )
             if edited_message:
@@ -1490,10 +1491,10 @@ async def freeforall_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     if users_col is None or referrals_col is None:
-        await send_and_delete_message(context, update.effective_chat.id, "😥 Database not connected. 😥", auto_delete=False)
+        await send_and_delete_message(context, update.effective_chat.id, "😥 Database not connected. 😥")
         return
 
-    await send_and_delete_message(context, update.effective_chat.id, " granting 12-hour premium access to all users... 🥳", auto_delete=False)
+    await send_and_delete_message(context, update.effective_chat.id, " granting 12-hour premium access to all users... 🥳")
 
     users_cursor = users_col.find({}, {"_id": 1})
     user_ids = [user["_id"] for user in users_cursor]
@@ -1508,7 +1509,7 @@ async def freeforall_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         except Exception as e:
             logger.error(f"Failed to grant premium to user {user_id}: {e}")
 
-    await send_and_delete_message(context, update.effective_chat.id, f"✅ Premium access granted to {len(user_ids)} users for 12 hours. Notifying users... 📬", auto_delete=False)
+    await send_and_delete_message(context, update.effective_chat.id, f"✅ Premium access granted to {len(user_ids)} users for 12 hours. Notifying users... 📬")
 
     broadcast_text = "🎉 You have been granted 12 hours of free premium access! 🥳"
     for user_id in user_ids:
@@ -1518,7 +1519,7 @@ async def freeforall_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         except Exception as e:
             logger.warning(f"Could not send premium notification to user {user_id}: {e}")
 
-    await send_and_delete_message(context, update.effective_chat.id, "✅ All users have been notified. 👍", auto_delete=False)
+    await send_and_delete_message(context, update.effective_chat.id, "✅ All users have been notified. 👍")
 
 
 async def unban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1877,7 +1878,7 @@ async def index_channel_task(context: ContextTypes.DEFAULT_TYPE, channel_id: int
             if forwarded_message:
                 await context.bot.delete_message(chat_id=DB_CHANNEL, message_id=forwarded_message.message_id)
 
-    await send_and_delete_message(context, user_chat_id, f"✅✅ Finished indexing channel {channel_id}. Total files indexed: {indexed_count}. 🎉", auto_delete=False)
+    await send_and_delete_message(context, user_chat_id, f"✅✅ Finished indexing channel {channel_id}. Total files indexed: {indexed_count}. 🎉")
 
 
 async def on_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2094,7 +2095,7 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if await is_banned(update.effective_user.id):
-        await send_and_delete_message(context, update.effective_chat.id, "🚫 You are banned from using this bot. 🚫")
+        await update.message.reply_text("🚫 You are banned from using this bot. 🚫")
         return
 
     # Add reaction to user's message in the background
@@ -2246,39 +2247,18 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not final_results:
         try:
-            edited_message = await context.bot.edit_message_text(
+            await context.bot.edit_message_text(
                 chat_id=status_message.chat.id,
                 message_id=status_message.message_id,
                 text="🤷‍♀️ No relevant files found after filtering by relevance. For your query contact @kaustavhibot 🤷‍♂️"
             )
-            if edited_message:
-                context.job_queue.run_once(
-                    delete_message_job,
-                    when=datetime.timedelta(minutes=5),
-                    data={"chat_id": edited_message.chat.id, "message_id": edited_message.message_id},
-                    name=f"delete_{edited_message.chat.id}_{edited_message.message_id}"
-                )
         except TelegramError:
             pass # Ignore if message was deleted
         return
 
     # Pass the full result list to the pagination function for consistency
-    search_id = str(uuid.uuid4())
-    if 'search_results_cache' not in context.bot_data:
-        context.bot_data['search_results_cache'] = {}
-
-    # Simple cache cleaning: remove old entries if cache is too large
-    if len(context.bot_data['search_results_cache']) > 50:
-        # Sort by creation time (implicit in UUIDs) and remove the oldest 20
-        oldest_keys = sorted(context.bot_data['search_results_cache'].keys())[:20]
-        for key in oldest_keys:
-            del context.bot_data['search_results_cache'][key]
-
-    context.bot_data['search_results_cache'][search_id] = {
-        'results': final_results,
-        'query': raw_query
-    }
-
+    context.user_data['search_results'] = final_results
+    context.user_data['search_query'] = raw_query
 
     # Edit the status message to show the results
     await send_results_page(
@@ -2288,18 +2268,15 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context=context,
         query=raw_query,
         user_mention=user.mention_html(),
-        message_id=status_message.message_id,
-        search_id=search_id
+        message_id=status_message.message_id
     )
 
 
-async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, user_mention: str, message_id: int = None, reply_to_message_id: int = None, active_filters=None, filter_view=None, search_id: str = None):
+async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, user_mention: str, message_id: int = None, reply_to_message_id: int = None, active_filters=None, filter_view=None):
     """Sends or edits a message to show a paginated list of search results with filter buttons."""
     if active_filters is None:
         active_filters = {}
-    if search_id:
-        context.user_data[f'active_filters_{search_id}'] = active_filters
-
+    context.user_data['active_filters'] = active_filters
 
     # 1. Filter results based on active filters
     filtered_results = []
@@ -2351,37 +2328,37 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
             option_buttons = []
             for option in options:
                 button_text = f"✅ {option}" if active_filters.get(filter_view) == option else option
-                callback_data = f"filter_{filter_view}_{option}_{search_id}"
+                callback_data = f"filter_{filter_view}_{option}_{query}"
                 option_buttons.append(InlineKeyboardButton(button_text, callback_data=callback_data))
             # Arrange options into rows of 2
             buttons.extend([option_buttons[i:i + 2] for i in range(0, len(option_buttons), 2)])
-        buttons.append([InlineKeyboardButton("⬅️ Back to Filters", callback_data=f"filter_back_{search_id}")])
+        buttons.append([InlineKeyboardButton("⬅️ Back to Filters", callback_data=f"filter_back_{query}")])
     else:
         # Show main filter category buttons
         category_buttons = []
         for f_type in filter_types:
             # Check if there are any options available for this filter in the results
             if any(r.get(f_type) for r in results):
-                category_buttons.append(InlineKeyboardButton(f_type.title(), callback_data=f"filter_view_{f_type}_{search_id}"))
+                category_buttons.append(InlineKeyboardButton(f_type.title(), callback_data=f"filter_view_{f_type}_{query}"))
         if category_buttons:
             buttons.append(category_buttons)
 
     # Add a 'Clear Filters' button if any are active
     if active_filters:
-        buttons.append([InlineKeyboardButton("❌ Clear All Filters", callback_data=f"filter_clear_all_{search_id}")])
+        buttons.append([InlineKeyboardButton("❌ Clear All Filters", callback_data=f"filter_clear_all_{query}")])
 
 
     # 6. Generate navigation and action buttons
     nav_buttons = []
     if page > 0:
-        nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page_{page-1}_{search_id}"))
+        nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page_{page-1}_{query}"))
     if end < len(filtered_results):
-        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}_{search_id}"))
+        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}_{query}"))
 
     if nav_buttons:
         buttons.append(nav_buttons)
 
-    buttons.append([InlineKeyboardButton("📨 Send All Files (Current Page)", callback_data=f"sendall_{page}_{search_id}")])
+    buttons.append([InlineKeyboardButton("📨 Send All Files (Current Page)", callback_data=f"sendall_{page}_{query}")])
 
     reply_markup = InlineKeyboardMarkup(buttons)
 
@@ -2440,13 +2417,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- Send All Files (Batch) ---
     if data.startswith("sendall_"):
-        _, page_str, search_id = data.split("_", 2)
+        _, page_str, search_query = data.split("_", 2)
         page = int(page_str)
-        search_data = context.bot_data.get('search_results_cache', {}).get(search_id)
-        if not search_data:
+        final_results = context.user_data.get('search_results')
+        if not final_results:
             await send_and_delete_message(context, user_id, "😥 Search session expired. Please search again. 🙏")
             return
-        files_to_send = search_data['results'][page * 6:(page + 1) * 6]
+        files_to_send = final_results[page * 6:(page + 1) * 6]
         if not files_to_send:
             await send_and_delete_message(context, user_id, "🤷‍♀️ No files found on this page to send. 🤷‍♂️")
             return
@@ -2455,38 +2432,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- Other Button Logic (Pagination, Start Menu, etc.) ---
     elif data.startswith("page_"):
-        _, page_str, search_id = data.split("_", 2)
+        _, page_str, search_query = data.split("_", 2)
         page = int(page_str)
 
-        search_data = context.bot_data.get('search_results_cache', {}).get(search_id)
-        active_filters = context.user_data.get(f'active_filters_{search_id}', {})
-        if not search_data:
+        final_results = context.user_data.get('search_results')
+        active_filters = context.user_data.get('active_filters', {})
+        if not final_results:
             await query.answer("⚠️ Search results have expired. Please search again. ⚠️", show_alert=True)
             return
 
         await send_results_page(
             chat_id=query.message.chat.id,
-            results=search_data['results'],
+            results=final_results,
             page=page,
             context=context,
-            query=search_data['query'],
+            query=search_query,
             message_id=query.message.message_id,
             user_mention=query.from_user.mention_html(),
-            active_filters=active_filters,
-            search_id=search_id
+            active_filters=active_filters
         )
 
     elif data.startswith("filter_"):
         parts = data.split("_")
         action = parts[1]
-        search_id = parts[-1]
+        search_query = parts[-1]
 
-        search_data = context.bot_data.get('search_results_cache', {}).get(search_id)
-        if not search_data:
+        final_results = context.user_data.get('search_results')
+        if not final_results:
             await query.answer("⚠️ Search results have expired. Please search again. ⚠️", show_alert=True)
             return
 
-        active_filters = context.user_data.get(f'active_filters_{search_id}', {})
+        active_filters = context.user_data.get('active_filters', {})
         filter_view = None
 
         if action == "view":
@@ -2511,15 +2487,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Reset to page 0 whenever a filter is changed
         await send_results_page(
             chat_id=query.message.chat.id,
-            results=search_data['results'],
+            results=final_results,
             page=0,
             context=context,
-            query=search_data['query'],
+            query=search_query,
             message_id=query.message.message_id,
             user_mention=query.from_user.mention_html(),
             active_filters=active_filters,
-            filter_view=filter_view,
-            search_id=search_id
+            filter_view=filter_view
         )
 
     elif data == "start_about":
@@ -2545,34 +2520,9 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     start_time = time.time()
     message = await context.bot.send_message(chat_id=update.effective_chat.id, text="Pinging...")
-    if not message:
-        return  # Exit if the message could not be sent
-
     end_time = time.time()
     latency = round((end_time - start_time) * 1000, 2)
-
-    try:
-        edited_message = await context.bot.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=message.message_id,
-            text=f"🏓 Pong! Latency: {latency} ms"
-        )
-
-        # Schedule the final, edited message for deletion
-        if edited_message:
-            context.job_queue.run_once(
-                delete_message_job,
-                when=datetime.timedelta(minutes=5),
-                data={"chat_id": edited_message.chat.id, "message_id": edited_message.message_id},
-                name=f"delete_{edited_message.chat.id}_{edited_message.message_id}"
-            )
-    except TelegramError as e:
-        logger.error(f"Error editing ping message: {e}")
-        # If editing fails, try to delete the original "Pinging..." message
-        try:
-            await context.bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
-        except TelegramError:
-            pass  # Ignore if it's already been deleted
+    await message.edit_text(f"🏓 Pong! Latency: {latency} ms")
 
 
 async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
