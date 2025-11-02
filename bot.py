@@ -2317,6 +2317,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("🤷‍♀️ Owner not configured. 🤷‍♂️", show_alert=True)
 
 
+async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to measure bot's latency."""
+    if update.effective_user.id not in ADMINS:
+        await send_and_delete_message(context, update.effective_chat.id, "🛑 You do not have permission to use this command. 🛑")
+        return
+
+    start_time = time.time()
+    message = await send_and_delete_message(context, update.effective_chat.id, "Pinging...", auto_delete=False)
+    end_time = time.time()
+    latency = round((end_time - start_time) * 1000, 2)
+    await message[0].edit_text(f"🏓 Pong! Latency: {latency} ms")
+
+
 async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles when an admin replies to a user's forwarded message."""
     user = update.effective_user
@@ -2467,6 +2480,7 @@ async def main_async():
     ptb_app.add_handler(CommandHandler("index_channel", index_channel_command))
     ptb_app.add_handler(CommandHandler("pm_on", pm_on_command))
     ptb_app.add_handler(CommandHandler("pm_off", pm_off_command))
+    ptb_app.add_handler(CommandHandler("ping", ping_command))
 
     # File and Message Handlers
     # Admin file upload via PM
