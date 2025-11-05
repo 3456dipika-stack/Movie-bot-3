@@ -2006,8 +2006,16 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- REVISED SEARCH LOGIC (Broad Filtering + Fuzzy Ranking) ---
 
-    # Split the query into words and escape them for a forgiving regex. Ignore short words.
-    words = [re.escape(word) for word in search_query.split() if len(word) > 1]
+    # NEW: Vowel-agnostic regex generation
+    # Split the query into words, escape them, and create vowel-agnostic patterns.
+    # Ignore short words.
+    words = []
+    for word in search_query.split():
+        if len(word) > 1:
+            # For each character in the word, insert a vowel wildcard.
+            # e.g., "ydha" becomes "y[aeiou]*d[aeiou]*h[aeiou]*a"
+            vowel_agnostic_pattern = '[aeiou]*'.join(re.escape(char) for char in word)
+            words.append(vowel_agnostic_pattern)
 
     if not words:
         await send_and_delete_message(context, update.effective_chat.id, "🤔 Query too short or invalid. Please try a longer search term. 🤔")
