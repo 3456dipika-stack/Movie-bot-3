@@ -2012,10 +2012,10 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     words = []
     for word in search_query.split():
         if len(word) > 1:
-            # For each character in the word, insert a vowel wildcard.
-            # e.g., "ydha" becomes "y[aeiou]*d[aeiou]*h[aeiou]*a"
-            vowel_agnostic_pattern = '[aeiou]*'.join(re.escape(char) for char in word)
-            words.append(vowel_agnostic_pattern)
+            # For each character in the word, insert a wildcard to match any characters.
+            # e.g., "yda" becomes "y.*d.*a"
+            wildcard_pattern = '.*'.join(re.escape(char) for char in word)
+            words.append(wildcard_pattern)
 
     if not words:
         await send_and_delete_message(context, update.effective_chat.id, "🤔 Query too short or invalid. Please try a longer search term. 🤔")
