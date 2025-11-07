@@ -648,7 +648,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     welcome_text = (
         f"👋 Hello {user_mention}, I am an advanced filter bot. 🤖\n\n"
-        "I can help you find files in this chat with ease. 🔎 Our database contains over 1.1 million (11 lakh) files!\n\n"
+        "I can help you find files in this chat with ease. 🔎 <b>Our database contains over 1.1 million (11 lakh) files!</b>\n\n"
         "You can also use `/rand` to get a random file or use `/connect_to_admin` to talk directly with the admin.\n\n"
         "Click the buttons below to learn more about how I work. 👇\n\n"
         "© Kaustav Ray"
