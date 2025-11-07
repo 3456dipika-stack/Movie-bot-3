@@ -651,7 +651,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-        "I can help you find files in this chat with ease. Just send me the name of the file. 🔎 Our database contains over 1.1 million (11 lakh) files!\n\n"
+        "I can help you find files in this chat with ease. Just send me the name of the file. <b>🔎 Our database contains over 1.1 million (11 lakh) files!</b>\n\n"
 
         "You can also use `/rand` to get a random file or use `/connect_to_admin` to talk directly with the admin.\n\n"
         "Click the buttons below to learn more about how I work. 👇\n\n"
