@@ -648,15 +648,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     welcome_text = (
         f"👋 Hello {user_mention}, I am an advanced filter bot. 🤖\n\n"
-
-
-
-
-
-
-        "I can help you find files in this chat with ease. Just send me the name of the file. <b>🔎 Our database contains over 1.1 million (11 lakh) files!</b>\n\n"
-
-
+        "I can help you find files in this chat with ease. 🔎 <b>Our database contains over 1.1 million (11 lakh) files!</b>\n\n"
         "You can also use `/rand` to get a random file or use `/connect_to_admin` to talk directly with the admin.\n\n"
         "Click the buttons below to learn more about how I work. 👇\n\n"
         "© Kaustav Ray"
@@ -2058,6 +2050,15 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"MongoDB search query failed on URI #{idx + 1}: {e}")
 
     # --- Fuzzy Ranking (to ensure the best match is first) ---
+    logger.info(f"Found {len(preliminary_results)} preliminary results. Starting fuzzy ranking.")
+    try:
+        await context.bot.edit_message_text(
+            chat_id=status_message.chat.id,
+            message_id=status_message.message_id,
+            text=f"✅ Found {len(preliminary_results)} potential matches. Ranking results by relevance... Sorting..."
+        )
+    except TelegramError:
+        pass # Ignore if message can't be edited
 
     if not preliminary_results:
         try:
@@ -2086,7 +2087,10 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Use a set to track file_id + channel_id tuples to ensure no duplicates from different DBs
     unique_files = set()
 
-    for file in preliminary_results:
+    # Limit the number of results to be ranked to prevent performance issues
+    results_to_rank = preliminary_results[:1000]
+
+    for file in results_to_rank:
         file_key = (file.get('file_id'), file.get('channel_id'))
         if file_key in unique_files:
             continue
