@@ -2203,15 +2203,15 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
     # Add navigation buttons
     nav_buttons = []
     if page > 0:
-        nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page_{page-1}_{search_id}_{user_id}"))
+        nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page_{page-1}_{search_id}"))
     if end < len(results):
-        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}_{search_id}_{user_id}"))
+        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}_{search_id}"))
 
     if nav_buttons:
         buttons.append(nav_buttons)
 
     # Send All button
-    buttons.append([InlineKeyboardButton("📨 Send All Files (Current Page)", callback_data=f"sendall_{page}_{search_id}_{user_id}")])
+    buttons.append([InlineKeyboardButton("📨 Send All Files (Current Page)", callback_data=f"sendall_{page}_{search_id}")])
 
     reply_markup = InlineKeyboardMarkup(buttons)
 
@@ -2266,15 +2266,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- Send All Files (Batch) ---
     if data.startswith("sendall_"):
         try:
-            _, page_str, search_id, original_user_id_str = data.split("_", 3)
+            _, page_str, search_id = data.split("_", 2)
             page = int(page_str)
-            original_user_id = int(original_user_id_str)
         except (ValueError, IndexError):
             await query.answer("Invalid button data.", show_alert=True)
-            return
-
-        if user_id != original_user_id:
-            await query.answer("You are not authorized to use this button.", show_alert=True)
             return
 
         search_data = context.bot_data.get('search_results_cache', {}).get(search_id)
@@ -2293,15 +2288,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- Other Button Logic (Pagination, Start Menu, etc.) ---
     elif data.startswith("page_"):
         try:
-            _, page_str, search_id, original_user_id_str = data.split("_", 3)
+            _, page_str, search_id = data.split("_", 2)
             page = int(page_str)
-            original_user_id = int(original_user_id_str)
         except (ValueError, IndexError):
             await query.answer("Invalid button data.", show_alert=True)
-            return
-
-        if user_id != original_user_id:
-            await query.answer("You are not authorized to use this button.", show_alert=True)
             return
 
         search_data = context.bot_data.get('search_results_cache', {}).get(search_id)
