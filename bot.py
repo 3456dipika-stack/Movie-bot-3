@@ -2141,17 +2141,28 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Pruned {len(keys_to_delete)} old entries from search cache.")
 
 
-    # Edit the status message to show the results using the new search_id
-    await send_results_page(
-        chat_id=status_message.chat.id,
-        results=final_results,
-        page=0,
-        context=context,
-        query=raw_query,
-        user_mention=user.mention_html(),
-        message_id=status_message.message_id,
-        search_id=search_id # Pass the new ID
-    )
+    try:
+        # Edit the status message to show the results using the new search_id
+        await send_results_page(
+            chat_id=status_message.chat.id,
+            results=final_results,
+            page=0,
+            context=context,
+            query=raw_query,
+            user_mention=user.mention_html(),
+            message_id=status_message.message_id,
+            search_id=search_id # Pass the new ID
+        )
+    except Exception as e:
+        logger.exception("An error occurred while sending search results.")
+        try:
+            await context.bot.edit_message_text(
+                chat_id=status_message.chat.id,
+                message_id=status_message.message_id,
+                text="🆘 An unexpected error occurred while preparing your results. Please try again later. 🆘"
+            )
+        except TelegramError:
+            pass # The original message might have been deleted
 
 
 async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, user_mention: str, message_id: int = None, reply_to_message_id: int = None, search_id: str = None):
