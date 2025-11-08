@@ -648,11 +648,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     welcome_text = (
         f"👋 Hello {user_mention}, I am an advanced filter bot. 🤖\n\n"
-
-
-
-        "I can help you find files in this chat with ease. Just send me the name of the file. 🔎 Our database contains over 1.1 million (11 lakh) files!\n\n"
-
+        "I can help you find files in this chat with ease. 🔎 <b>Our database contains over 1.1 million (11 lakh) files!</b>\n\n"
         "You can also use `/rand` to get a random file or use `/connect_to_admin` to talk directly with the admin.\n\n"
         "Click the buttons below to learn more about how I work. 👇\n\n"
         "© Kaustav Ray"
@@ -2115,11 +2111,25 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass # Ignore if message was deleted
         return
 
-    # Pass the full result list to the pagination function for consistency
-    context.user_data['search_results'] = final_results
-    context.user_data['search_query'] = raw_query
+    # --- Stateless Caching & Pagination ---
+    search_id = str(uuid.uuid4())
+    context.bot_data['search_results_cache'][search_id] = {
+        'results': final_results,
+        'query': raw_query,
+        'user_id': user.id # Store the original user's ID
+    }
 
-    # Edit the status message to show the results
+    # Memory management: Prune the cache if it gets too large
+    cache = context.bot_data['search_results_cache']
+    if len(cache) > 50:
+        # Get the 20 oldest keys and remove them
+        keys_to_delete = list(cache.keys())[:20]
+        for key in keys_to_delete:
+            del cache[key]
+        logger.info(f"Pruned {len(keys_to_delete)} old entries from search cache.")
+
+
+    # Edit the status message to show the results using the new search_id
     await send_results_page(
         chat_id=status_message.chat.id,
         results=final_results,
@@ -2127,15 +2137,18 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context=context,
         query=raw_query,
         user_mention=user.mention_html(),
-        message_id=status_message.message_id
+        message_id=status_message.message_id,
+        search_id=search_id # Pass the new ID
     )
 
 
-async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, user_mention: str, message_id: int = None, reply_to_message_id: int = None):
+async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, user_mention: str, message_id: int = None, reply_to_message_id: int = None, search_id: str = None):
     """Sends or edits a message to show a paginated list of search results."""
     start, end = page * 6, (page + 1) * 6
     page_results = results[start:end]
     bot_username = context.bot.username
+    user_id = context.bot_data['search_results_cache'][search_id]['user_id']
+
 
     # Escape the query string for HTML
     escaped_query = html.escape(query)
@@ -2167,15 +2180,15 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
     # Add navigation buttons
     nav_buttons = []
     if page > 0:
-        nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page_{page-1}_{query}"))
+        nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page_{page-1}_{search_id}_{user_id}"))
     if end < len(results):
-        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}_{query}"))
+        nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}_{search_id}_{user_id}"))
 
     if nav_buttons:
         buttons.append(nav_buttons)
 
     # Send All button
-    buttons.append([InlineKeyboardButton("📨 Send All Files (Current Page)", callback_data=f"sendall_{page}_{query}")])
+    buttons.append([InlineKeyboardButton("📨 Send All Files (Current Page)", callback_data=f"sendall_{page}_{search_id}_{user_id}")])
 
     reply_markup = InlineKeyboardMarkup(buttons)
 
@@ -2225,41 +2238,66 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     data = query.data
-    user_id = query.from_user.id
+    user_id = query.from_user.id # This is the user who clicked the button
 
     # --- Send All Files (Batch) ---
     if data.startswith("sendall_"):
-        _, page_str, search_query = data.split("_", 2)
-        page = int(page_str)
-        final_results = context.user_data.get('search_results')
-        if not final_results:
-            await send_and_delete_message(context, user_id, "😥 Search session expired. Please search again. 🙏")
+        try:
+            _, page_str, search_id, original_user_id_str = data.split("_", 3)
+            page = int(page_str)
+            original_user_id = int(original_user_id_str)
+        except (ValueError, IndexError):
+            await query.answer("Invalid button data.", show_alert=True)
             return
+
+        if user_id != original_user_id:
+            await query.answer("You are not authorized to use this button.", show_alert=True)
+            return
+
+        search_data = context.bot_data.get('search_results_cache', {}).get(search_id)
+        if not search_data:
+            await send_and_delete_message(context, query.message.chat.id, "😥 Search session expired. Please search again. 🙏")
+            return
+
+        final_results = search_data['results']
         files_to_send = final_results[page * 6:(page + 1) * 6]
         if not files_to_send:
-            await send_and_delete_message(context, user_id, "🤷‍♀️ No files found on this page to send. 🤷‍♂️")
+            await send_and_delete_message(context, query.message.chat.id, "🤷‍♀️ No files found on this page to send. 🤷‍♂️")
             return
 
         asyncio.create_task(send_all_files_task(user_id, query.message.chat.id, context, files_to_send, query.from_user.mention_html()))
 
     # --- Other Button Logic (Pagination, Start Menu, etc.) ---
     elif data.startswith("page_"):
-        _, page_str, search_query = data.split("_", 2)
-        page = int(page_str)
+        try:
+            _, page_str, search_id, original_user_id_str = data.split("_", 3)
+            page = int(page_str)
+            original_user_id = int(original_user_id_str)
+        except (ValueError, IndexError):
+            await query.answer("Invalid button data.", show_alert=True)
+            return
 
-        final_results = context.user_data.get('search_results')
-        if not final_results:
+        if user_id != original_user_id:
+            await query.answer("You are not authorized to use this button.", show_alert=True)
+            return
+
+        search_data = context.bot_data.get('search_results_cache', {}).get(search_id)
+        if not search_data:
             await query.answer("⚠️ Search results have expired. Please search again. ⚠️", show_alert=True)
             return
+
+        final_results = search_data['results']
+        query_text = search_data['query']
 
         await send_results_page(
             chat_id=query.message.chat.id,
             results=final_results,
             page=page,
             context=context,
-            query=search_query,
+            query=query_text,
             message_id=query.message.message_id,
-            user_mention=query.from_user.mention_html()
+            user_mention=query.from_user.mention_html(),
+            search_id=search_id # Pass the search_id
         )
 
     elif data == "start_about":
@@ -2382,6 +2420,7 @@ async def main_async():
     server.start()
     logger.info("Web server started in a background thread.")
     ptb_app.bot_data["server"] = server
+    ptb_app.bot_data["search_results_cache"] = {}
 
     # Create TTL index for premium users (expires at the time specified in the 'premium_until' field)
     if referrals_col is not None:
