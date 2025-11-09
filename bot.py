@@ -2128,7 +2128,7 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAULT_TYPE, query: str, user_mention: str, message_id: int = None, reply_to_message_id: int = None):
     """Sends or edits a message to show a paginated list of search results."""
-    start, end = page * 6, (page + 1) * 6
+    start, end = page * 15, (page + 1) * 15
     page_results = results[start:end]
     bot_username = context.bot.username
 
@@ -2136,7 +2136,7 @@ async def send_results_page(chat_id, results, page, context: ContextTypes.DEFAUL
     escaped_query = html.escape(query)
     text = (
         f"Hey {user_mention}, here are the top {len(results)} results for: <b>{escaped_query}</b> 🎉\n"
-        f"(Page {page + 1} / {math.ceil(len(results) / 6)}) (Sorted by Relevance)"
+        f"(Page {page + 1} / {math.ceil(len(results) / 15)}) (Sorted by Relevance)"
     )
     buttons = []
 
@@ -2230,7 +2230,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not final_results:
             await send_and_delete_message(context, user_id, "😥 Search session expired. Please search again. 🙏")
             return
-        files_to_send = final_results[page * 6:(page + 1) * 6]
+        files_to_send = final_results[page * 15:(page + 1) * 15]
         if not files_to_send:
             await send_and_delete_message(context, user_id, "🤷‍♀️ No files found on this page to send. 🤷‍♂️")
             return
