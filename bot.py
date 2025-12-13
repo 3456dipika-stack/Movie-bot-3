@@ -1957,6 +1957,11 @@ async def search_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_delete_message(context, update.effective_chat.id, "🤫 Use this bot on any group. Sorry, (only admin) 🤫")
         return
 
+    # Check if the query contains an https link
+    if "https://" in update.message.text:
+        await send_and_delete_message(context, update.effective_chat.id, "⚠️ Link search is not supported. Please enter a file name. ⚠️")
+        return
+
     if await is_banned(update.effective_user.id):
         await update.message.reply_text("🚫 You are banned from using this bot. 🚫")
         return
