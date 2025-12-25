@@ -45,7 +45,7 @@ DB_CHANNEL = -1002975831610  # Database channel
 LOG_CHANNEL = -1002988891392  # Channel to log user queries
 # Channels users must join for access
 JOIN_CHECK_CHANNEL = [-1002692055617]
-ADMINS = [6705618257]        # Admin IDs
+ADMINS = [6705618257, 5915172170]        # Admin IDs
 PM_SEARCH_ENABLED = True   # Controls whether non-admins can search in PM
 
 # Words to ignore in search queries for better matching
